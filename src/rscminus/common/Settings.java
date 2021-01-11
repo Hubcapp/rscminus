@@ -58,6 +58,8 @@ public class Settings {
   public static boolean needNpcCreation = true;
   public static boolean dumpAppearances = false;
   public static boolean checkBoundaryRemoval = false;
+  public static boolean dumpRNGEvents = false;
+  public static boolean dumpInteractions = false;
   public static String scraperOutputPath = "dump";
   public static int threads = 5;
 

@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU General Public License along with rscminus. If not,
  * see <http://www.gnu.org/licenses/>.
  *
- * Authors: see <https://github.com/OrN/rscminus>
+ * Authors: see <https://github.com/RSCPlus/rscminus>
  */
 
 package rscminus.scraper;
@@ -23,49 +23,47 @@ import rscminus.common.FileUtil;
 import rscminus.common.JGameData;
 import rscminus.common.Logger;
 import rscminus.common.Settings;
-import rscminus.game.PacketBuilder;
 import rscminus.game.WorldManager;
-import rscminus.game.constants.Game;
-import rscminus.game.world.ViewRegion;
-import rscminus.scraper.client.Character;
 
 import java.io.*;
-import java.math.BigInteger;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import static rscminus.common.Settings.dumpNPCDamage;
 import static rscminus.common.Settings.initDir;
-import static rscminus.scraper.ReplayEditor.appendingToReplay;
 
 public class Scraper {
-    public static long startTime = 0;
+    private static long startTime = 0;
 
-    public static Map<Integer, Integer> m_sceneryLocs = Collections.synchronizedMap(new ConcurrentHashMap<Integer, Integer>());
-    public static Map<Integer, Integer> m_boundaryLocs = Collections.synchronizedMap(new ConcurrentHashMap<Integer, Integer>());
+    static Map<Integer, Integer> m_sceneryLocs = Collections.synchronizedMap(new ConcurrentHashMap<Integer, Integer>());
+    static Map<Integer, Integer> m_boundaryLocs = Collections.synchronizedMap(new ConcurrentHashMap<Integer, Integer>());
+    static Map<Integer, String> m_replaysKeysProcessed = Collections.synchronizedMap(new ConcurrentHashMap<Integer, String>());
 
-    public static Map<Integer, String> m_replaysKeysProcessed = Collections.synchronizedMap(new ConcurrentHashMap<Integer, String>());
+    static List<String> m_npcLocsSQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_replayDictionarySQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_chatSQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_messageSQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_inventorySQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_damageSQL = Collections.synchronizedList(new ArrayList<String>());
 
-    public static List<String> m_npcLocCSV = Collections.synchronizedList(new ArrayList<String>());
-    public static List<String> m_replayDictionarySQL = Collections.synchronizedList(new ArrayList<String>());
-    public static List<String> m_chatSQL = Collections.synchronizedList(new ArrayList<String>());
-    public static List<String> m_messageSQL = Collections.synchronizedList(new ArrayList<String>());
-    public static List<String> m_inventorySQL = Collections.synchronizedList(new ArrayList<String>());
-    public static List<String> m_damageSQL = Collections.synchronizedList(new ArrayList<String>());
+    // RNG SQLs
+    static List<String> m_cookingSQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_woodcutSQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_fishingSQL = Collections.synchronizedList(new ArrayList<String>());
 
     // Settings
-    public static int sanitizeVersion = -1; // can set replay version (shouldn't though)
+    static int sanitizeVersion = -1; // can set replay version (shouldn't though)
     private static StripperWindow stripperWindow;
 
-    public static ArrayList<String> replayDirectories = new ArrayList<String>();
-    public static boolean scraping = false;
-    public static boolean stripping = false;
-    public static int ipFoundCount = 0;
-    public static int replaysProcessedCount = 0;
+    private static List<String> replayDirectories = Collections.synchronizedList(new ArrayList<String>());
+    static boolean scraping = false;
+    static boolean stripping = false;
+    static int ipFoundCount = 0;
+    static int replaysProcessedCount = 0;
+    static boolean validSQLCredentials = false;
 
-    public static WorldManager worldManager;
+    static WorldManager worldManager = new WorldManager();
 
     private static void dumpScenery(String fname) {
         int sceneryCount = 0;
@@ -115,23 +113,9 @@ public class Scraper {
         }
     }
 
-    private static void dumpNPCLocs(String fname) {
-        try {
-            Logger.Info("There's  a whopping " +  (m_npcLocCSV.size() - 1) + " NPC locations to dump. Please hold.");
-            DataOutputStream out = new DataOutputStream(new FileOutputStream(new File(fname)));
-            for (String entry : m_npcLocCSV) {
-                out.writeBytes(entry);
-            }
-            out.close();
-            Logger.Info("Dumped " + (m_npcLocCSV.size() - 1) + " NPC locations");
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
     private static void dumpSQLToFile(List<String> sqlStatements, String identifier, String fname) {
         try {
-            int size = (sqlStatements.size() - 1);
+            int size = (sqlStatements.size());
             int nullCount = 0;
             Logger.Info(String.format("@|green There's a whopping %d %s%s to dump. Please hold.|@", size, identifier, size == 1 ? "" : "s"));
             DataOutputStream out = new DataOutputStream(new FileOutputStream(new File(fname)));
@@ -149,34 +133,43 @@ public class Scraper {
         }
     }
 
-        private static void printHelp(String args[]) {
+    private static void printHelp(String args[]) {
         System.out.println("\nrscminus v" + Settings.versionNumber+"\n");
         System.out.println("syntax:");
         System.out.println("\t[OPTIONS] [REPLAY DIRECTORY]");
         System.out.println("options:");
         System.out.println("\t-a\t\t\tAppend client test data to the end of all replays being processed");
+        System.out.println("\t-b\t\t\tCheck boundary removal");
         System.out.println("\t-c\t\t\tDump anonymized Chat and Private Messages SQL file");
         System.out.println("\t-d\t\t\tDump scenery & boundary data to binary files");
         System.out.println("\t-f\t\t\tRemove opcodes related to the friend's list");
         System.out.println("\t-h\t\t\tShow this usage dialog");
+        System.out.println("\t-i\t\t\tDump inventories");
         System.out.println("\t-m\t\t\tDump System Messages and NPC <-> Player Dialogues to SQL file");
         System.out.println("\t-n\t\t\tDump NPC locations to SQL file");
         System.out.println("\t-p\t\t\tSanitize public chat");
+        System.out.println("\t-r\t\t\tDump Ranged data");
         System.out.println("\t-s\t\t\tExport sanitized replays");
+        System.out.println("\t-t<number of threads>\t\t\tSet number of threads for processing replays (Fastest will be just a few cores less than your max physical");
         System.out.println("\t-v<0-" + ReplayEditor.VERSION + ">\t\t\tSet sanitizer replay version (Default is original replay version)");
         System.out.println("\t-w\t\t\tDump Sleepwords to BMP and BIN files");
         System.out.println("\t-x\t\t\tSanitize private chat");
+        System.out.println("\t-y\t\t\tDump RNG related data. y not.");
         System.out.println("\t-z\t\t\tProcess replays even if they're not authentic");
     }
 
     private static boolean parseArguments(String args[]) {
+        boolean needsJGameData = false;
+        boolean needsWorldManager = false;
         for (String arg : args) {
             switch(arg.toLowerCase().substring(0, 2)) {
                 case "-a":
-                    appendingToReplay = true;
+                    ReplayEditor.appendingToReplay = true;
                     break;
                 case "-b":
                     Settings.checkBoundaryRemoval = true;
+                    needsJGameData = true;
+                    needsWorldManager = true;
                     break;
                 case "-c":
                     Settings.dumpChat = true;
@@ -187,6 +180,11 @@ public class Scraper {
                     Settings.dumpBoundaries = true;
                     Logger.Info("dumping scenery & boundaries");
                     break;
+                case "-e":
+                    Settings.dumpInteractions = true;
+                    needsJGameData = true;
+                    needsWorldManager = true;
+                    break;
                 case "-f":
                     Settings.sanitizeFriendsIgnore = true;
                     Logger.Info("sanitize Friends Ignore set");
@@ -195,6 +193,7 @@ public class Scraper {
                     return false;
                 case "-i":
                     Settings.dumpInventories = true;
+                    needsJGameData = true;
                     break;
                 case "-m":
                     Settings.dumpMessages = true;
@@ -210,6 +209,7 @@ public class Scraper {
                     break;
                 case "-r":
                     Settings.dumpNPCDamage = true;
+                    needsJGameData = true;
                     Logger.Info("dump NPC damage sources set");
                     break;
                 case "-s":
@@ -221,7 +221,7 @@ public class Scraper {
                     break;
                 case "-v":
                     try {
-                        int version = Integer.parseInt(arg.substring(2, arg.length()));
+                        int version = Integer.parseInt(arg.substring(2));
                         if (version < 0 || version > ReplayEditor.VERSION)
                             return false;
                         sanitizeVersion = version;
@@ -237,6 +237,12 @@ public class Scraper {
                     Settings.sanitizePrivateChat = true;
                     Logger.Info("sanitize Private Chat set");
                     break;
+                case "-y":
+                    Settings.dumpRNGEvents = true;
+                    needsJGameData = true;
+                    needsWorldManager = true;
+                    Logger.Info("dump RNG Events set");
+                    break;
                 case "-z":
                     Settings.sanitizeForce = true;
                     Logger.Info("sanitize Force set");
@@ -249,14 +255,10 @@ public class Scraper {
                     Settings.sanitizePath = arg;
 
                     // initialize info needed by each scraper method
-                    if (Settings.dumpNPCDamage ||
-                        Settings.checkBoundaryRemoval ||
-                        Settings.dumpInventories
-                    ) {
+                    if (needsJGameData || needsWorldManager) {
                         JGameData.init(true);
                     }
-
-                    if (Settings.checkBoundaryRemoval) {
+                    if (needsWorldManager) {
                         worldManager = new WorldManager();
                         worldManager.init();
                     }
@@ -267,7 +269,6 @@ public class Scraper {
 
         return false;
     }
-
 
     public static void findReplayDirectories(String path) {
         File[] files = new File(path).listFiles();
@@ -287,7 +288,6 @@ public class Scraper {
 
     }
 
-
     public static void processDirectory(String path) {
         findReplayDirectories(path);
 
@@ -304,7 +304,6 @@ public class Scraper {
 
         Logger.Info("@|cyan Finished processing all replays in " + ((float)(System.currentTimeMillis() - startTime) / 1000) + " seconds! |@");
     }
-
 
     public static void strip() {
         Logger.Info("Stripping " + Settings.sanitizePath);
@@ -328,11 +327,6 @@ public class Scraper {
         }
         Settings.sanitizeOutputPath = Settings.sanitizeBaseOutputPath;
 
-        if (Settings.dumpNpcLocs) {
-            m_npcLocCSV = new ArrayList<String>();
-            m_npcLocCSV.add("replayName,timeStamp,irlTimeStamp,npcId,npcServerIndex (Not Unique!),XCoordinate,YCoordinate");
-        }
-
         FileUtil.mkdir(Settings.sanitizePath);
 
         Settings.sanitizeOutputPath = Settings.sanitizeOutputPath + "/" + new File(Settings.sanitizePath).getName();
@@ -345,24 +339,6 @@ public class Scraper {
         } else {
             processDirectory(Settings.sanitizePath);
         }
-        if (Settings.dumpMessages) {
-            dumpSQLToFile(m_messageSQL, "message", Settings.scraperOutputPath + "allMessages.sql");
-        }
-        if (Settings.dumpInventories) {
-            dumpSQLToFile(m_inventorySQL, "inventory", Settings.scraperOutputPath + "allInventories.sql");
-        }
-
-        if (Settings.dumpChat) {
-            dumpSQLToFile(m_chatSQL, "chat message", Settings.scraperOutputPath + "allChatMessages.sql");
-        }
-
-        if (Settings.dumpMessages || Settings.dumpChat) {
-            dumpSQLToFile(m_replayDictionarySQL, "replay path", Settings.scraperOutputPath + "replayDictionary.sql");
-        }
-
-        if (Settings.dumpNpcLocs) {
-            dumpNPCLocs(Settings.scraperOutputPath + "npcLocs.csv");
-        }
 
         if (Settings.dumpScenery) {
             dumpScenery(Settings.scraperOutputPath + "scenery.bin");
@@ -371,16 +347,59 @@ public class Scraper {
             dumpBoundaries(Settings.scraperOutputPath + "boundaries.bin");
         }
 
-        if (Settings.dumpNPCDamage) {
-            dumpSQLToFile(m_damageSQL,  "ranged damage", "rangedDataUnambiguous.sql");
+        if (validSQLCredentials) {
+            validSQLCredentials = checkInsertedCorrectly();
+        }
+
+        if (!validSQLCredentials) {
+            if (Settings.dumpMessages) {
+                dumpSQLToFile(m_messageSQL, "message", Settings.scraperOutputPath + "allMessages.sql");
+            }
+            if (Settings.dumpInventories) {
+                dumpSQLToFile(m_inventorySQL, "inventory", Settings.scraperOutputPath + "allInventories.sql");
+            }
+            if (Settings.dumpChat) {
+                dumpSQLToFile(m_chatSQL, "chat message", Settings.scraperOutputPath + "allChatMessages.sql");
+            }
+            if (Settings.dumpMessages || Settings.dumpChat) {
+                dumpSQLToFile(m_replayDictionarySQL, "replay path", Settings.scraperOutputPath + "replayDictionary.sql");
+            }
+            if (Settings.dumpNpcLocs) {
+                dumpSQLToFile(m_npcLocsSQL, "npc location", Settings.scraperOutputPath + "npcLocs.sql");
+            }
+            if (Settings.dumpNPCDamage) {
+                dumpSQLToFile(m_damageSQL, "ranged damage", Settings.scraperOutputPath + "rangedDataUnambiguous.sql");
+            }
+            if (Settings.dumpRNGEvents) {
+                dumpSQLToFile(m_cookingSQL, "cooking event", Settings.scraperOutputPath + "cooking.sql");
+                dumpSQLToFile(m_woodcutSQL, "woodcut event", Settings.scraperOutputPath + "woodcut.sql");
+                dumpSQLToFile(m_fishingSQL, "fishing event", Settings.scraperOutputPath + "fishing.sql");
+            }
         }
 
         Logger.Info(String.format("@|green %d out of %d replays were able to have an IP address determined.|@", ipFoundCount, replaysProcessedCount));
         Logger.Info("Saved to " + Settings.sanitizeOutputPath);
         Logger.Info("@|green,intensity_bold Finished Stripping/Optimizing!|@");
+
+
         stripping = false;
         replaysProcessedCount = 0;
         ipFoundCount = 0;
+    }
+
+    static boolean checkInsertedCorrectly() {
+        int statementsInserted = ScraperDatabaseStructure.getRowcountFromAllTables();
+        int statementsCreated = m_npcLocsSQL.size() + m_replayDictionarySQL.size() + m_chatSQL.size() + m_messageSQL.size()
+            + m_inventorySQL.size() + m_damageSQL.size() + m_cookingSQL.size() + m_woodcutSQL.size() + m_fishingSQL.size();
+
+        if (statementsCreated == statementsInserted) {
+            Logger.Info("@|green,intensity_bold Inserted " + statementsInserted + " statement(s) into database " + ScraperDatabase.sqlDatabaseName + "|@");
+            return true;
+        } else {
+            Logger.Error("@|red Unfortunately didn't insert the same amount of statements as were created. Created: "
+                + statementsCreated + " Inserted: " + statementsInserted + "|@");
+            return false;
+        }
     }
 
     public static void main(String args[]) {
@@ -400,6 +419,14 @@ public class Scraper {
 
             return;
         } else { // command line arguments specified, don't create gui
+
+            try {
+                validSQLCredentials = ScraperDatabase.init();
+            } catch (Exception e) {
+                e.printStackTrace();
+                validSQLCredentials = false;
+            }
+
             if (    Settings.dumpScenery ||
                     Settings.dumpBoundaries ||
                     Settings.dumpNpcLocs ||
@@ -416,12 +443,10 @@ public class Scraper {
         }
     }
 
-
     /** @return the window */
     public static StripperWindow getStripperWindow() {
         return stripperWindow;
     }
-
 
     /** @param window the window to set */
     public static void setStripperWindow(StripperWindow window) {stripperWindow = window;}

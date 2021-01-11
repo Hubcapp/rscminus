@@ -20,6 +20,7 @@
 package rscminus.game;
 
 import rscminus.common.JGameData;
+import rscminus.common.Logger;
 import rscminus.game.constants.Game;
 import rscminus.game.entity.Boundary;
 import rscminus.game.entity.Scenery;
@@ -92,6 +93,22 @@ public class WorldManager {
         Scenery scenery = view.getScenery(x, y);
         if (scenery != null)
             player.interactScenery(scenery, option);
+    }
+
+    public int getSceneryId(int x, int y) {
+        if (x >= 0 && y >= 0) {
+            try {
+                ViewArea view = getViewAreaCoordinate(x, y);
+                return view.getScenery(x, y).getID();
+            } catch (NullPointerException e) {
+                // This can happen if either the scenery location is fake
+                // OR
+                // if the scenery interacted with is only temporary e.g. a fire or leak, etc.
+                return 60000;
+            }
+        } else {
+            return 60000;
+        }
     }
 
     public int getCollisionMask(int x, int y) {

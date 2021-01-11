@@ -133,8 +133,21 @@ public class Game {
     public static final int STAT_RANGED = 4;
     public static final int STAT_PRAYER = 5;
     public static final int STAT_MAGIC = 6;
+    public static final int STAT_COOKING = 7;
+    public static final int STAT_WOODCUTTING = 8;
+    public static final int STAT_FLETCHING = 9;
+    public static final int STAT_FISHING = 10;
+    public static final int STAT_FIREMAKING = 11;
+    public static final int STAT_CRAFTING = 12;
+    public static final int STAT_SMITHING = 13;
+    public static final int STAT_MINING = 14;
+    public static final int STAT_HERBLAW = 15;
+    public static final int STAT_AGILITY = 16;
+    public static final int STAT_THIEVING = 17;
     public static final int STAT_COUNT = 18;
-    public static final String[] STAT_NAMES = { "attack", "defense", "strength", "hitpoints", "ranged", "prayer", "magic" }; // TODO research to make sure all spellings are correct for all skills as typed in the levelup messages
+    // this is as spelled in level up messages
+    public static final String[] LEVEL_UP_STAT_NAMES = { "attack", "defense", "strength", "hitpoints", "ranged", "prayer", "magic",
+        "cooking", "woodcutting", "fletching", "fishing", "firemaking", "crafting", "smithing", "mining", "herblaw", "agility", "thieving" };
 
     // Chat Types
     public static final int CHAT_NONE = 0;

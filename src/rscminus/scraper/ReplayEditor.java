@@ -25,6 +25,7 @@ import rscminus.common.Logger;
 import rscminus.common.Settings;
 
 import java.io.*;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.zip.GZIPOutputStream;
@@ -33,8 +34,7 @@ import java.util.zip.Checksum;
 
 public class ReplayEditor {
     private LinkedList<ReplayKeyPair> m_keys = new LinkedList<ReplayKeyPair>();
-    private LinkedList<ReplayPacket> m_incomingPackets = new LinkedList<ReplayPacket>();
-    private LinkedList<ReplayPacket> m_outgoingPackets = new LinkedList<ReplayPacket>();
+    private LinkedList<ReplayPacket> m_packets = new LinkedList<ReplayPacket>();
     private ReplayVersion m_replayVersion = new ReplayVersion();
     private ReplayMetadata m_replayMetadata = new ReplayMetadata();
     private boolean m_compressed = false;
@@ -66,13 +66,7 @@ public class ReplayEditor {
         return m_metadata;
     }
 
-    public LinkedList<ReplayPacket> getIncomingPackets() {
-        return m_incomingPackets;
-    }
-
-    public LinkedList<ReplayPacket> getOutgoingPackets() {
-        return m_outgoingPackets;
-    }
+    public LinkedList<ReplayPacket> getPackets() { return m_packets; }
 
     public ReplayVersion getReplayVersion() {
         return m_replayVersion;
@@ -254,15 +248,13 @@ public class ReplayEditor {
                 boolean success = incomingReader.open(inFile, m_replayVersion, m_replayMetadata, m_keys, m_inMetadata, m_metadata, m_inChecksum, false);
                 if (!success)
                     return false;
-                while ((replayPacket = incomingReader.readPacket(false)) != null) {
-                    m_incomingPackets.add(replayPacket);
+                while ((replayPacket = incomingReader.readPacket(false, true)) != null) {
+                    m_packets.add(replayPacket);
                 }
 
                 if (appendingToReplay) {
-                    LinkedList<ReplayPacket> newPackets = ReplayClientExperiments.GenerateSpriteViewer(m_incomingPackets.getLast().timestamp);
-                    for (int i = 0; i < newPackets.size(); i++) {
-                        m_incomingPackets.add(newPackets.get(i));
-                    }
+                    LinkedList<ReplayPacket> newPackets = ReplayClientExperiments.GenerateSpriteViewer(m_packets.getLast().timestamp);
+                    m_packets.addAll(newPackets);
                 }
                 //FileUtil.writeFull("output/in.raw", incomingReader.getData());
             }
@@ -278,8 +270,8 @@ public class ReplayEditor {
                 boolean success = outgoingReader.open(outFile, m_replayVersion, m_replayMetadata, m_keys, m_outMetadata, m_metadata, m_outChecksum, true);
                 if (!success)
                     return false;
-                while ((replayPacket = outgoingReader.readPacket(false)) != null) {
-                    m_outgoingPackets.add(replayPacket);
+                while ((replayPacket = outgoingReader.readPacket(false, false)) != null) {
+                    m_packets.add(replayPacket);
                 }
                 //FileUtil.writeFull("output/out.raw", outgoingReader.getData());
             }
@@ -291,7 +283,8 @@ public class ReplayEditor {
         boolean firstLogin = false;
         ReplayPacket previousPacket = null;
         int skew = 0;
-        for (ReplayPacket packet : m_incomingPackets) {
+        for (ReplayPacket packet : m_packets) {
+            if (!packet.incoming) continue; // TODO: should we not skew outgoing packets too? this was original logic before combining m_incomingPackets & m_outgoingPackets
             packet.timestamp += skew;
             if (packet.opcode == VIRTUAL_OPCODE_CONNECT) {
                 if (firstLogin) {
@@ -307,6 +300,9 @@ public class ReplayEditor {
             }
             previousPacket = packet;
         }
+
+        // Sort incoming & outgoing packets together by timestamp
+        m_packets.sort(new ReplayPacketComparator());
 
         return true;
     }
@@ -392,75 +388,127 @@ public class ReplayEditor {
 
             // Export incoming packets
             ISAACCipher isaac = new ISAACCipher();
-            int keyIndex = -1;
+            int incomingKeyIndex = -1;
+            int outgoingKeyIndex = -1;
             int disconnectCount = 0;
             int lastTimestamp = 0;
             DataOutputStream in = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(inFile))));
-            for(ReplayPacket packet : m_incomingPackets) {
-                if (packet.opcode == VIRTUAL_OPCODE_NOP) {
-                    continue;
-                }
+            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(outFile))));
 
-                // Handle virtual packets
-                if (packet.opcode == VIRTUAL_OPCODE_CONNECT) {
-                    // Write disconnect
-                    if (m_replayVersion.version > 0 && disconnectCount > 0) {
-                        in.writeInt(lastTimestamp);
-                        in.writeInt(-1);
+            for(ReplayPacket packet : m_packets) {
+                if (packet.incoming) {
+                    // INCOMING PACKETS
+                    if (packet.opcode == VIRTUAL_OPCODE_NOP) {
+                        continue;
                     }
 
-                    disconnectCount++;
+                    // Handle virtual packets
+                    if (packet.opcode == VIRTUAL_OPCODE_CONNECT) {
+                        // Write disconnect
+                        if (m_replayVersion.version > 0 && disconnectCount > 0) {
+                            in.writeInt(lastTimestamp);
+                            in.writeInt(-1);
+                        }
+
+                        disconnectCount++;
+                        in.writeInt(packet.timestamp);
+                        in.writeInt(1);
+                        in.writeByte(packet.data[0]);
+                        if ((packet.data[0] & 64) != 0) {
+                            isaac.reset();
+                            isaac.setKeys(m_keys.get(++incomingKeyIndex).keys);
+                        }
+                        continue;
+                    }
+
+                    // Write timestamp
                     in.writeInt(packet.timestamp);
-                    in.writeInt(1);
-                    in.writeByte(packet.data[0]);
-                    if ((packet.data[0] & 64) != 0) {
-                        isaac.reset();
-                        isaac.setKeys(m_keys.get(++keyIndex).keys);
-                    }
-                    continue;
-                }
 
-                // Write timestamp
-                in.writeInt(packet.timestamp);
-
-                // Handle normal packets
-                int packetLength = 1;
-                if (packet.data != null)
-                    packetLength += packet.data.length;
-                if (packetLength >= 160) {
-                    in.writeInt(packetLength + 2);
-                    in.writeByte(packetLength / 256 + 160);
-                    in.writeByte(packetLength & 0xFF);
-                } else {
-                    in.writeInt(packetLength + 1);
-                    in.writeByte(packetLength);
-                }
-
-                // Write data
-                int encodedOpcode = (packet.opcode + isaac.getNextValue()) & 0xFF;
-                if (packetLength == 1) {
-                    in.writeByte(encodedOpcode);
-                } else {
-                    if (packetLength < 160) {
-                        int dataSize = packetLength - 1;
-                        in.writeByte(packet.data[dataSize - 1]);
-                        in.writeByte(encodedOpcode);
-                        if (dataSize > 1)
-                            in.write(packet.data, 0, dataSize - 1);
+                    // Handle normal packets
+                    int packetLength = 1;
+                    if (packet.data != null)
+                        packetLength += packet.data.length;
+                    if (packetLength >= 160) {
+                        in.writeInt(packetLength + 2);
+                        in.writeByte(packetLength / 256 + 160);
+                        in.writeByte(packetLength & 0xFF);
                     } else {
-                        in.writeByte(encodedOpcode);
-                        in.write(packet.data, 0, packet.data.length);
+                        in.writeInt(packetLength + 1);
+                        in.writeByte(packetLength);
                     }
+
+                    // Write data
+                    int encodedOpcode = (packet.opcode + isaac.getNextValue()) & 0xFF;
+                    if (packetLength == 1) {
+                        in.writeByte(encodedOpcode);
+                    } else {
+                        if (packetLength < 160) {
+                            int dataSize = packetLength - 1;
+                            in.writeByte(packet.data[dataSize - 1]);
+                            in.writeByte(encodedOpcode);
+                            if (dataSize > 1)
+                                in.write(packet.data, 0, dataSize - 1);
+                        } else {
+                            in.writeByte(encodedOpcode);
+                            in.write(packet.data, 0, packet.data.length);
+                        }
+                    }
+
+                    if (packet.timestamp < lastTimestamp) {
+                        System.out.println("Timestamp is in the past");
+                    }
+
+                    // Update metadata length
+                    m_replayMetadata.replayLength = packet.timestamp;
+
+                    lastTimestamp = packet.timestamp;
+                } else {
+                    // OUTGOING PACKETS
+                    if (packet.opcode == VIRTUAL_OPCODE_NOP) {
+                        continue;
+                    }
+
+                    // Write timestamp
+                    out.writeInt(packet.timestamp);
+
+                    // Handle normal packets
+                    int packetLength = 1;
+                    if (packet.data != null)
+                        packetLength += packet.data.length;
+                    if (packetLength >= 160) {
+                        out.writeInt(packetLength + 2);
+                        out.writeByte(packetLength / 256 + 160);
+                        out.writeByte(packetLength & 0xFF);
+                    } else {
+                        out.writeInt(packetLength + 1);
+                        out.writeByte(packetLength);
+                    }
+
+                    // Write data
+                    int encodedOpcode = packet.opcode;
+                    if (encodedOpcode == VIRTUAL_OPCODE_CONNECT) {
+                        encodedOpcode = 0;
+                        isaac.reset();
+                        isaac.setKeys(m_keys.get(++outgoingKeyIndex).keys);
+                    } else {
+                        encodedOpcode = (encodedOpcode + isaac.getNextValue()) & 0xFF;
+                    }
+                    if (packetLength == 1) {
+                        out.writeByte(encodedOpcode);
+                    } else {
+                        if (packetLength < 160) {
+                            int dataSize = packetLength - 1;
+                            out.writeByte(packet.data[dataSize - 1]);
+                            out.writeByte(encodedOpcode);
+                            if (dataSize > 1)
+                                out.write(packet.data, 0, dataSize - 1);
+                        } else {
+                            out.writeByte(encodedOpcode);
+                            out.write(packet.data, 0, packet.data.length);
+                        }
+                    }
+                    lastTimestamp = packet.timestamp;
                 }
-
-                if (packet.timestamp < lastTimestamp) {
-                    System.out.println("Timestamp is in the past");
-                }
-
-                // Update metadata length
-                m_replayMetadata.replayLength = packet.timestamp;
-
-                lastTimestamp = packet.timestamp;
             }
             in.writeInt(ReplayReader.TIMESTAMP_EOF);
             if (m_replayVersion.version >= 3)
@@ -468,55 +516,6 @@ public class ReplayEditor {
             in.write(m_metadata);
             in.close();
 
-            // Export outgoing packets
-            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(outFile))));
-            keyIndex = -1;
-            for(ReplayPacket packet : m_outgoingPackets) {
-                if (packet.opcode == VIRTUAL_OPCODE_NOP) {
-                    continue;
-                }
-
-                // Write timestamp
-                out.writeInt(packet.timestamp);
-
-                // Handle normal packets
-                int packetLength = 1;
-                if (packet.data != null)
-                    packetLength += packet.data.length;
-                if (packetLength >= 160) {
-                    out.writeInt(packetLength + 2);
-                    out.writeByte(packetLength / 256 + 160);
-                    out.writeByte(packetLength & 0xFF);
-                } else {
-                    out.writeInt(packetLength + 1);
-                    out.writeByte(packetLength);
-                }
-
-                // Write data
-                int encodedOpcode = packet.opcode;
-                if (encodedOpcode == VIRTUAL_OPCODE_CONNECT) {
-                    encodedOpcode = 0;
-                    isaac.reset();
-                    isaac.setKeys(m_keys.get(++keyIndex).keys);
-                } else {
-                    encodedOpcode = (encodedOpcode + isaac.getNextValue()) & 0xFF;
-                }
-                if (packetLength == 1) {
-                    out.writeByte(encodedOpcode);
-                } else {
-                    if (packetLength < 160) {
-                        int dataSize = packetLength - 1;
-                        out.writeByte(packet.data[dataSize - 1]);
-                        out.writeByte(encodedOpcode);
-                        if (dataSize > 1)
-                            out.write(packet.data, 0, dataSize - 1);
-                    } else {
-                        out.writeByte(encodedOpcode);
-                        out.write(packet.data, 0, packet.data.length);
-                    }
-                }
-                lastTimestamp = packet.timestamp;
-            }
             out.writeInt(ReplayReader.TIMESTAMP_EOF);
             if (m_replayVersion.version >= 3)
                 out.write(m_outMetadata);
@@ -628,7 +627,7 @@ public class ReplayEditor {
         }
     }
 
-    private void writePCAPPacket(DataOutputStream pcap, ReplayPacket packet, boolean outgoing) throws IOException {
+    private void writePCAPPacket(DataOutputStream pcap, ReplayPacket packet) throws IOException {
         if (packet.opcode == VIRTUAL_OPCODE_NOP)
             return;
 
@@ -636,7 +635,7 @@ public class ReplayEditor {
         int size = 1;
         int lengthSize = 0;
         if (opcode == VIRTUAL_OPCODE_CONNECT) {
-            if (outgoing) {
+            if (!packet.incoming) {
                 opcode = 0;
                 if (packet.data != null)
                     size += packet.data.length;
@@ -660,7 +659,7 @@ public class ReplayEditor {
         pcap.writeInt(size + lengthSize + 19); // Original length
 
         // Ethernet header
-        if (outgoing) {
+        if (!packet.incoming) {
             pcap.write(spoofedServerMAC);
             pcap.write(spoofedClientMAC);
         } else {
@@ -670,7 +669,7 @@ public class ReplayEditor {
         pcap.writeShort(0x0);
 
         // rscminus Header
-        pcap.writeByte(outgoing ? 1 : 0); // Client
+        pcap.writeByte(!packet.incoming ? 1 : 0); // Client
         pcap.writeInt(packet.opcode);
 
         if (lengthSize > 0)
@@ -682,9 +681,9 @@ public class ReplayEditor {
 
     public void exportPCAP(String fname) {
         // Required files
-        File pcapFile = new File(fname + ".pcap");
+        File pcapFile = new File(fname + ".pcap.gz");
         try {
-            DataOutputStream pcap = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(pcapFile)));
+            DataOutputStream pcap = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(pcapFile))));
 
             // Write global header
             pcap.writeInt(0xa1b2c3d4); // Magic number
@@ -695,27 +694,8 @@ public class ReplayEditor {
             pcap.writeInt(65535); // Packet snapshot length
             pcap.writeInt(1); // Data link type (Ethernet)
 
-            int outgoingIndex = 0;
-            ReplayPacket outgoingPacket = null;
-            for(ReplayPacket packet : m_incomingPackets) {
-                if (outgoingIndex < m_outgoingPackets.size()) {
-                    if (outgoingPacket == null)
-                        outgoingPacket = m_outgoingPackets.get(outgoingIndex);
-                    while (outgoingPacket.timestamp <= packet.timestamp) {
-                        writePCAPPacket(pcap, outgoingPacket, true);
-                        outgoingIndex++;
-                        if (outgoingIndex >= m_outgoingPackets.size())
-                            break;
-                        outgoingPacket = m_outgoingPackets.get(outgoingIndex);
-                    }
-                }
-                writePCAPPacket(pcap, packet, false);
-            }
-
-            // Write remaining outgoing packets
-            while (outgoingIndex < m_outgoingPackets.size()) {
-                ReplayPacket packet = m_outgoingPackets.get(outgoingIndex++);
-                writePCAPPacket(pcap, packet, true);
+            for (ReplayPacket packet : m_packets) {
+                writePCAPPacket(pcap, packet);
             }
 
             pcap.close();

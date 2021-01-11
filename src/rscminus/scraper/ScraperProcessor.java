@@ -1,3 +1,22 @@
+/**
+ * rscminus
+ *
+ * This file is part of rscminus.
+ *
+ * rscminus is free software: you can redistribute it and/or modify it under the terms of the GNU
+ * General Public License as published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * rscminus is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+ * even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with rscminus. If not,
+ * see <http://www.gnu.org/licenses/>.
+ *
+ * Authors: see <https://github.com/RSCPlus/rscminus>
+ */
+
 package rscminus.scraper;
 
 import rscminus.common.FileUtil;
@@ -17,35 +36,36 @@ import java.math.BigInteger;
 import java.util.*;
 
 import static rscminus.scraper.ReplayEditor.appendingToReplay;
+import static rscminus.scraper.ScraperDatabaseStructure.*;
 
 public class ScraperProcessor implements Runnable {
 
     private static HashMap<Integer, Integer> sceneryLocs = new HashMap<Integer, Integer>();
     private static HashMap<Integer, Integer> boundaryLocs = new HashMap<Integer, Integer>();
 
-    public Character[] npcsCache = new Character[500];
-    public Character[] npcs = new Character[500];
-    public Character[] npcsServer = new Character[5000];
-    public int npcCount = 0;
-    public int npcCacheCount = 0;
-    public int highestOption = 0;
-    public int highestStoreStock = 0;
+    private Character[] npcsCache = new Character[500];
+    private Character[] npcs = new Character[500];
+    private Character[] npcsServer = new Character[5000];
+    private int npcCount = 0;
+    private int npcCacheCount = 0;
+    private int highestOption = 0;
+    private int highestStoreStock = 0;
 
-    public int[] inventoryItems = new int[30];
-    public long[] inventoryStackAmounts = new long[30];
-    public int[] inventoryItemEquipped = new int[30];
-    public int[] inventoryItemsAllCount = new int[1290];
-    public int lastAmmo = -1;
+    private int[] inventoryItems = new int[30];
+    private long[] inventoryStackAmounts = new long[30];
+    private int[] inventoryItemEquipped = new int[30];
+    private int[] inventoryItemsAllCount = new int[1290];
+    private int lastAmmo = -1;
 
-    public int[] playerBaseStat = new int[18];
-    public int[] playerCurStat = new int[18];
-    public long[] playerXP = new long[18];
+    private int[] playerBaseStat = new int[18];
+    private int[] playerCurStat = new int[18];
+    private long[] playerXP = new long[18];
 
-    public String lastSound = "";
-    public int lastSoundTimestamp = -1;
-    public int lastAmmoTimestamp = -1;
+    private String lastSound = "";
+    private int lastSoundTimestamp = -1;
+    private int lastAmmoTimestamp = -1;
 
-    public static final int SCENERY_BLANK = 65536;
+    static final int SCENERY_BLANK = 65536;
 
     String fname;
 
@@ -539,12 +559,14 @@ public class ScraperProcessor implements Runnable {
             metadata[ReplayEditor.METADATA_FLAGS_OFFSET] |= ReplayEditor.FLAG_SANITIZE_VERSION;
     }
 
-    public void processReplay(String fname) {
+    private void processReplay(String fname) {
 
         ReplayEditor editor = new ReplayEditor();
         setFlags(editor);
         boolean success = false;
         int keyCRC = 0;
+
+        List<String> thisReplaySqlStatements = new ArrayList<>();
 
         if (editor.importNonPacketData(fname)) {
             keyCRC = editor.getKeyCRC();
@@ -587,11 +609,16 @@ public class ScraperProcessor implements Runnable {
         int length = -1;
 
         if (Settings.dumpMessages || Settings.dumpChat) {
-            Scraper.m_replayDictionarySQL.add(
-                String.format("%s%d', '%s');\n",
-                    "INSERT INTO `rscMessages`.`replayDictionary` (`index`, `filePath`) VALUES ('",
-                    keyCRC,
-                    fname.replaceFirst(Settings.sanitizePath, "").replaceAll("'", "''")
+            thisReplaySqlStatements.add(
+                ScraperDatabase.newSQLStatement(
+                    Scraper.m_replayDictionarySQL,
+                    ScraperDatabase.getInsertStatement(
+                        replayDictionaryTable,
+                        new Object[] {
+                             keyCRC,
+                             fname.replaceFirst(Settings.sanitizePath, "")
+                        }
+                    )
                 )
             );
         }
@@ -607,722 +634,903 @@ public class ScraperProcessor implements Runnable {
             inventoryItemsAllCount[itemID] = 0;
         }
 
-        HashMap<Integer, ReplayPacket> interestingSleepPackets = new HashMap<Integer, ReplayPacket>();
+        ArrayList<ReplayPacket> interestingSleepPackets = new ArrayList<ReplayPacket>();
 
-        // Process incoming packet
-        LinkedList<ReplayPacket> incomingPackets = editor.getIncomingPackets();
-        for (ReplayPacket packet : incomingPackets) {
-            Logger.Debug("@|white [" + keyCRC + "]|@ " + String.format("incoming opcode: %d",packet.opcode));
-            try {
+        RNGEventIdentifiers rng = new RNGEventIdentifiers();
+        int op216Count = 0;
+        int sendPMCount = 0;
 
-                switch (packet.opcode) {
-                    case ReplayEditor.VIRTUAL_OPCODE_CONNECT:
-                        Logger.Info("@|white [" + keyCRC + "]|@ loginresponse: " + packet.data[0] + " (timestamp: " + packet.timestamp + ")");
+        LinkedList<ReplayPacket> packets = editor.getPackets();
 
-                        if (Settings.dumpSleepWords) {
-                            interestingSleepPackets.put(interestingSleepPackets.size(), packet);
-                        }
+        int useItemWithSceneryX = -1;
+        int useItemWithSceneryY = -1;
+        int useItemWithSceneryItemID = -1;
+        int interactWithSceneryOption2X = -1;
+        int interactWithSceneryOption2Y = -1;
+        int interactWithSceneryOption1X = -1;
+        int interactWithSceneryOption1Y = -1;
+        int lastSceneryInteractX = useItemWithSceneryX;
+        int lastSceneryInteractY = useItemWithSceneryY;
+        int lastInteractOpcode = -1;
 
-                        break;
-                    case PacketBuilder.OPCODE_FLOOR_SET:
-                        localPID = packet.readUnsignedShort();
-                        planeX = packet.readUnsignedShort();
-                        planeY = packet.readUnsignedShort();
-                        planeFloor = packet.readUnsignedShort();
-                        floorYOffset = packet.readUnsignedShort();
-                        break;
-                    case PacketBuilder.OPCODE_SEND_MESSAGE:
-                        if (Settings.dumpMessages || Settings.dumpSleepWords) {
-                            int type = packet.readUnsignedByte();
-                            int infoContained = packet.readUnsignedByte();
-
-                            String sendMessage = packet.readPaddedString();
-
+        for (ReplayPacket packet : packets) {
+            if (packet.incoming) {
+                Logger.Debug("@|white [" + keyCRC + "]|@ " + String.format("incoming opcode: %d",packet.opcode));
+                try {
+                    switch (packet.opcode) {
+                        case ReplayEditor.VIRTUAL_OPCODE_CONNECT:
+                            Logger.Info("@|white [" + keyCRC + "]|@ loginresponse: " + packet.data[0] + " (timestamp: " + packet.timestamp + ")");
                             if (Settings.dumpSleepWords) {
-                                if (sendMessage.equals("You are unexpectedly awoken! You still feel tired")) {
-                                    interestingSleepPackets.put(interestingSleepPackets.size(), packet);
-                                }
+                                interestingSleepPackets.add(packet);
                             }
 
-                            if (Settings.dumpMessages) {
-                                String sender = "";
-                                String clan = "";
-                                String color = "";
-                                if ((infoContained & 1) != 0) {
-                                    sender = packet.readPaddedString();
-                                    clan = packet.readPaddedString();
+                            break;
+                        case PacketBuilder.OPCODE_FLOOR_SET:
+                            localPID = packet.readUnsignedShort();
+                            planeX = packet.readUnsignedShort();
+                            planeY = packet.readUnsignedShort();
+                            planeFloor = packet.readUnsignedShort();
+                            floorYOffset = packet.readUnsignedShort();
+                            break;
+                        case PacketBuilder.OPCODE_SEND_MESSAGE:
+                            if (Settings.dumpMessages || Settings.dumpSleepWords || Settings.dumpRNGEvents) {
+                                int type = packet.readUnsignedByte();
+                                int infoContained = packet.readUnsignedByte();
+
+                                String sendMessage = packet.readPaddedString();
+
+                                if (Settings.dumpSleepWords) {
+                                    if (sendMessage.equals("You are unexpectedly awoken! You still feel tired")) {
+                                        interestingSleepPackets.add(packet);
+                                    }
                                 }
 
-                                if ((infoContained & 2) != 0) {
-                                    color = packet.readPaddedString();
+                                if (Settings.dumpRNGEvents) {
+                                    try {
+                                        // Dump cooking food chances
+                                        Object[] foodResult =
+                                        rng.identifyFood(rng.matchesCooking(sendMessage), sendMessage, keyCRC,
+                                            packet.timestamp, playerCurStat[Game.STAT_COOKING],
+                                            useItemWithSceneryItemID, useItemWithSceneryX, useItemWithSceneryY);
+
+                                        if ((boolean) foodResult[0]) {
+                                            thisReplaySqlStatements.add((String) foodResult[1]);
+                                        }
+                                    } catch (Exception e) {
+                                        Logger.Error("Error identifying food!");
+                                        e.printStackTrace();
+                                    }
+
+                                    try {
+                                        // Dump success rate at cutting trees
+                                        if (Scraper.worldManager == null) {
+                                            Logger.Info("UwU");
+                                        }
+                                        Object[] woodResult =
+                                        rng.identifyWood(rng.matchesWoodcut(sendMessage), sendMessage, keyCRC,
+                                            packet.timestamp, playerCurStat[Game.STAT_WOODCUTTING],
+                                            Scraper.worldManager.getSceneryId(lastSceneryInteractX, lastSceneryInteractY),
+                                            lastInteractOpcode);
+
+                                        if ((boolean) woodResult[0]) {
+                                            thisReplaySqlStatements.add((String) woodResult[1]);
+                                        }
+                                    } catch (Exception e) {
+                                        Logger.Error("Error identifying wood!");
+                                        e.printStackTrace();
+                                    }
+
+                                    try {
+                                        // Dump success rate at fishing
+                                        Object[] fishResult =
+                                        rng.identifyFish(rng.matchesFish(sendMessage, type), sendMessage, keyCRC,
+                                            packet.timestamp, playerCurStat[Game.STAT_FISHING],
+                                            Scraper.worldManager.getSceneryId(lastSceneryInteractX, lastSceneryInteractY),
+                                            lastInteractOpcode);
+
+                                        if ((boolean) fishResult[0]) {
+                                            thisReplaySqlStatements.add((String) fishResult[1]);
+                                        }
+                                    } catch (Exception e) {
+                                        Logger.Error("Error identifying fish!");
+                                        e.printStackTrace();
+                                    }
                                 }
-                                Scraper.m_messageSQL.add(
-                                    "INSERT INTO `rscMessages`.`SEND_MESSAGE` (`replayIndex`, `timestamp`, `messageType`, `infoContained`, `message`, `sender`, `sender2`, `color`) VALUES " +
-                                        String.format("('%d', '%d', '%d', '%d', '%s', '%s', '%s', '%s');\n",
-                                            keyCRC,
-                                            packet.timestamp,
-                                            type,
-                                            infoContained,
-                                            sendMessage.replaceAll("'", "''"),
-                                            sender,
-                                            clan,
-                                            color)
+
+                                if (Settings.dumpMessages) {
+                                    String sender = "";
+                                    String clan = "";
+                                    String color = "";
+                                    if ((infoContained & 1) != 0) {
+                                        sender = packet.readPaddedString();
+                                        clan = packet.readPaddedString();
+                                    }
+
+                                    if ((infoContained & 2) != 0) {
+                                        color = packet.readPaddedString();
+                                    }
+                                    thisReplaySqlStatements.add(
+                                        ScraperDatabase.newSQLStatement(
+                                            Scraper.m_messageSQL,
+                                            ScraperDatabase.getInsertStatement(
+                                                sendMessageTable,
+                                                new Object[] {
+                                                    keyCRC,
+                                                    packet.timestamp,
+                                                    type,
+                                                    infoContained,
+                                                    sendMessage,
+                                                    sender,
+                                                    clan,
+                                                    color
+                                                }
+                                            )
+                                        )
+                                    );
+                                }
+                            }
+                            break;
+                        case PacketBuilder.OPCODE_DIALOGUE_OPTIONS:
+                            if (Settings.dumpMessages) {
+                                int numberOfOptions = packet.readUnsignedByte();
+                                if (numberOfOptions > highestOption) {
+                                    highestOption = numberOfOptions;
+                                }
+
+                                String[] choices = new String[] { "", "", "", "", "" };
+                                for (int i = 0; i < numberOfOptions; i++) {
+                                    choices[i] = packet.readPaddedString();
+                                }
+                                thisReplaySqlStatements.add(
+                                    ScraperDatabase.newSQLStatement(
+                                        Scraper.m_messageSQL,
+                                        ScraperDatabase.getInsertStatement(
+                                            dialogueOptionTable,
+                                            new Object[] {
+                                                editor.getKeyCRC(),
+                                                packet.timestamp,
+                                                numberOfOptions,
+                                                choices[0],
+                                                choices[1],
+                                                choices[2],
+                                                choices[3],
+                                                choices[4]
+                                            }
+                                        )
+                                    )
                                 );
                             }
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_DIALOGUE_OPTIONS:
-                        if (Settings.dumpMessages) {
-                            int numberOfOptions = packet.readUnsignedByte();
-                            if (numberOfOptions > highestOption) {
-                                highestOption = numberOfOptions;
+                            break;
+                        case PacketBuilder.OPCODE_CREATE_PLAYERS:
+                            packet.startBitmask();
+                            playerX = packet.readBitmask(11);
+                            playerY = packet.readBitmask(13);
+                            playerAnim = packet.readBitmask(4);
+                            packet.readBitmask(4);
+                            packet.endBitmask();
+                            if (Settings.dumpScenery) {
+                                fillView(playerX, playerY, sceneryLocs);
                             }
-                            String dialogueOptionsInsert = "INSERT INTO `rscMessages`.`DIALOGUE_OPTION` (`replayIndex`, `timestamp`, `numberOfOptions`";
-                            String dialogueOptionsValues = String.format("'%d', '%d', '%d'", editor.getKeyCRC(), packet.timestamp, numberOfOptions);
-
-                            for (int i = 1; i <= numberOfOptions; i++) {
-                                dialogueOptionsInsert = String.format("%s%s%d%s",dialogueOptionsInsert, ", `choice", i, "`");
-                                dialogueOptionsValues += String.format(", '%s'", packet.readPaddedString().replaceAll("'", "''"));
-                            }
-
-                            Scraper.m_messageSQL.add( String.format("%s%s%s%s",
-                                dialogueOptionsInsert,
-                                ") VALUES (",
-                                dialogueOptionsValues,
-                                ");\n")
-                            );
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_CREATE_PLAYERS:
-                        packet.startBitmask();
-                        playerX = packet.readBitmask(11);
-                        playerY = packet.readBitmask(13);
-                        playerAnim = packet.readBitmask(4);
-                        packet.readBitmask(4);
-                        packet.endBitmask();
-                        if (Settings.dumpScenery) {
-                            fillView(playerX, playerY, sceneryLocs);
-                        }
-                        packet.skip(packet.data.length - 4);
-                        break;
-                    case PacketBuilder.OPCODE_UPDATE_PLAYERS: { // 234
-                        int originalPlayerCount = packet.readUnsignedShort();
-                        int playerCount = originalPlayerCount;
-                        for (int i = 0; i < originalPlayerCount; i++) {
-                            int startPosition = packet.tell();
-                            int pid = packet.readUnsignedShort();
-                            int updateType = packet.readUnsignedByte();
-                            if (updateType == 0) { // bubble overhead
-                                packet.skip(2);
-                            } else if (updateType == 1) { // chat
-                                packet.skip(1);
-                                String chatMessage = packet.readRSCString();
-                                if (Settings.dumpChat) {
-                                    Scraper.m_chatSQL.add(
-                                        "INSERT INTO `rscMessages`.`UPDATE_PLAYERS_TYPE_1` (`replayIndex`, `timestamp`, `pid`, `localPlayerMessageCount`, `message`) VALUES " +
-                                            String.format("('%d', '%d', '%d', '%d', '%s');\n",
-                                                keyCRC,
-                                                packet.timestamp,
-                                                pid,
-                                                pid == localPID ? op234type1EchoCount++ : -1,
-                                                chatMessage.replaceAll("'", "''")
+                            packet.skip(packet.data.length - 4);
+                            break;
+                        case PacketBuilder.OPCODE_UPDATE_PLAYERS: { // 234
+                            int originalPlayerCount = packet.readUnsignedShort();
+                            int playerCount = originalPlayerCount;
+                            for (int i = 0; i < originalPlayerCount; i++) {
+                                int startPosition = packet.tell();
+                                int pid = packet.readUnsignedShort();
+                                int updateType = packet.readUnsignedByte();
+                                if (updateType == 0) { // bubble overhead
+                                    packet.skip(2);
+                                } else if (updateType == 1) { // chat
+                                    packet.skip(1);
+                                    String chatMessage = packet.readRSCString();
+                                    if (Settings.dumpChat) {
+                                        thisReplaySqlStatements.add(
+                                            ScraperDatabase.newSQLStatement(
+                                                Scraper.m_chatSQL,
+                                                ScraperDatabase.getInsertStatement(
+                                                    updatePlayersType1Table,
+                                                    new Object[] {
+                                                        keyCRC,
+                                                        packet.timestamp,
+                                                        pid,
+                                                        pid == localPID ? op234type1EchoCount++ : -1,
+                                                        chatMessage
+                                                    }
+                                                )
                                             )
-                                    );
-                                }
-
-                                // Strip Chat
-                                if (Settings.sanitizePublicChat) {
-                                    int trimSize = packet.tell() - startPosition;
-                                    packet.skip(-trimSize);
-                                    packet.trim(trimSize);
-                                    playerCount--;
-                                    continue;
-                                }
-                            } else if (updateType == 2) { // damage taken
-                                packet.skip(3);
-                            } else if (updateType == 3) { // show projectile towards an NPC
-                                int sprite = packet.readUnsignedShort();
-                                int shooterIndex = packet.readUnsignedShort();
-                                if (Settings.dumpNPCDamage) {
-                                    if (npcsServer[shooterIndex] != null) {
-                                        npcsServer[shooterIndex].attackingPlayerServerIndex = pid;
-                                        npcsServer[shooterIndex].incomingProjectileSprite = sprite;
-                                        npcsServer[shooterIndex].lastAttackerIndex = pid;
-                                        npcsServer[shooterIndex].lastSprite = sprite;
-                                    } else {
-                                        // NPC possibly off screen & being shot by player closer to the NPC.
+                                        );
                                     }
-                                }
-                            } else if (updateType == 4) { // show projectile towards a player
-                                int sprite = packet.readUnsignedShort();
-                                int shooterIndex = packet.readUnsignedShort();
-                                if (Settings.dumpNPCDamage) {
-                                    if (sprite != 3) { // gnome ball
-                                        Logger.Info("@|white [" + keyCRC + "]|@ " + pid + " shot at " + shooterIndex + " with " + sprite);
-                                    }
-                                }
-                            } else if (updateType == 5) { // equipment change
-                                packet.skip(2);
-                                packet.readPaddedString();
-                                packet.readPaddedString();
-                                int equipCount = packet.readUnsignedByte();
-                                packet.skip(equipCount);
-                                packet.skip(6);
-                            } else if (updateType == 6) { // quest chat
-                                String message = packet.readRSCString();
-                                if (Settings.dumpMessages) {
-                                    Scraper.m_messageSQL.add(
-                                        "INSERT INTO `rscMessages`.`UPDATE_PLAYERS_TYPE_6` (`replayIndex`, `timestamp`, `pid`, `message`) VALUES " +
-                                            String.format("('%d', '%d', '%d', '%s');\n",
-                                                keyCRC,
-                                                packet.timestamp,
-                                                pid,
-                                                message.replaceAll("'", "''")
-                                            )
-                                    );
-                                }
-                            } else {
-                                Logger.Info("@|white [" + keyCRC + "]|@ Hit unanticipated update type " + updateType);
-                                packet.skip(2);
-                                packet.readPaddedString();
-                                packet.readPaddedString();
-                                packet.skip(6 + packet.readUnsignedByte());
-                            }
-                        }
 
-                        // Rewrite player count
-                        if (originalPlayerCount != playerCount) {
-                            if (playerCount == 0) {
-                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                            } else {
-                                packet.seek(0);
-                                packet.writeUnsignedShort(playerCount);
-                            }
-                        }
-                        break;
-                    }
-                    case PacketBuilder.OPCODE_SET_IGNORE:
-                        if (Settings.sanitizeFriendsIgnore)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        break;
-                    case PacketBuilder.OPCODE_UPDATE_IGNORE:
-                        if (Settings.sanitizeFriendsIgnore)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        break;
-                    case PacketBuilder.OPCODE_UPDATE_FRIEND:
-                        if (Settings.sanitizeFriendsIgnore)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        try {
-                            packet.readPaddedString(); // Friend's name
-                            packet.readPaddedString(); // Friend's old name
-                            int onlineStatus = packet.readByte();
-                            if (onlineStatus > 1) { // the friend is online, offline can be 0 or 1 see fsnom2@aol.com2/08-03-2018 14.14.44 for 1
-                                String world = packet.readPaddedString();
-                                if (world.startsWith("Classic")) {
-                                    if (onlineStatus == 6) { // same world
-                                        int worldNum = Integer.parseInt(world.substring(world.length() - 1));
-                                        editor.getReplayMetadata().IPAddress4 =worldNum;
-                                    } else {
-                                        int worldNumExcluded = Integer.parseInt(world.substring(world.length() - 1));
-                                        if (worldNumExcluded <= 5) {
-                                            editor.getReplayMetadata().world_num_excluded |= (int)Math.pow(2,worldNumExcluded - 1);
+                                    // Strip Chat
+                                    if (Settings.sanitizePublicChat) {
+                                        int trimSize = packet.tell() - startPosition;
+                                        packet.skip(-trimSize);
+                                        packet.trim(trimSize);
+                                        playerCount--;
+                                        continue;
+                                    }
+                                } else if (updateType == 2) { // damage taken
+                                    packet.skip(3);
+                                } else if (updateType == 3) { // show projectile towards an NPC
+                                    int sprite = packet.readUnsignedShort();
+                                    int shooterIndex = packet.readUnsignedShort();
+                                    if (Settings.dumpNPCDamage) {
+                                        if (npcsServer[shooterIndex] != null) {
+                                            npcsServer[shooterIndex].attackingPlayerServerIndex = pid;
+                                            npcsServer[shooterIndex].incomingProjectileSprite = sprite;
+                                            npcsServer[shooterIndex].lastAttackerIndex = pid;
+                                            npcsServer[shooterIndex].lastSprite = sprite;
                                         } else {
-                                            editor.foundInauthentic = true;
-                                            Logger.Warn("@|white [" + keyCRC + "]|@ Inauthentic amount of worlds");
+                                            // NPC possibly off screen & being shot by player closer to the NPC.
+                                        }
+                                    }
+                                } else if (updateType == 4) { // show projectile towards a player
+                                    int sprite = packet.readUnsignedShort();
+                                    int shooterIndex = packet.readUnsignedShort();
+                                    if (Settings.dumpNPCDamage) {
+                                        if (sprite != 3) { // gnome ball
+                                            Logger.Info("@|white [" + keyCRC + "]|@ " + pid + " shot at " + shooterIndex + " with " + sprite);
+                                        }
+                                    }
+                                } else if (updateType == 5) { // equipment change
+                                    packet.skip(2);
+                                    packet.readPaddedString();
+                                    packet.readPaddedString();
+                                    int equipCount = packet.readUnsignedByte();
+                                    packet.skip(equipCount);
+                                    packet.skip(6);
+                                } else if (updateType == 6) { // quest chat
+                                    String message = packet.readRSCString();
+                                    if (Settings.dumpMessages) {
+                                        thisReplaySqlStatements.add(
+                                            ScraperDatabase.newSQLStatement(
+                                                Scraper.m_messageSQL,
+                                                ScraperDatabase.getInsertStatement(
+                                                    updatePlayersType6Table,
+                                                    new Object[] {
+                                                        keyCRC,
+                                                        packet.timestamp,
+                                                        pid,
+                                                        message
+                                                    }
+                                                )
+                                            )
+                                        );
+                                    }
+                                } else {
+                                    Logger.Info("@|white [" + keyCRC + "]|@ Hit unanticipated update type " + updateType);
+                                    packet.skip(2);
+                                    packet.readPaddedString();
+                                    packet.readPaddedString();
+                                    packet.skip(6 + packet.readUnsignedByte());
+                                }
+                            }
+
+                            // Rewrite player count
+                            if (originalPlayerCount != playerCount) {
+                                if (playerCount == 0) {
+                                    packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                                } else {
+                                    packet.seek(0);
+                                    packet.writeUnsignedShort(playerCount);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketBuilder.OPCODE_SET_IGNORE:
+                            if (Settings.sanitizeFriendsIgnore)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            break;
+                        case PacketBuilder.OPCODE_UPDATE_IGNORE:
+                            if (Settings.sanitizeFriendsIgnore)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            break;
+                        case PacketBuilder.OPCODE_UPDATE_FRIEND:
+                            if (Settings.sanitizeFriendsIgnore)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            try {
+                                packet.readPaddedString(); // Friend's name
+                                packet.readPaddedString(); // Friend's old name
+                                int onlineStatus = packet.readByte();
+                                if (onlineStatus > 1) { // the friend is online, offline can be 0 or 1 see fsnom2@aol.com2/08-03-2018 14.14.44 for 1
+                                    String world = packet.readPaddedString();
+                                    if (world.startsWith("Classic")) {
+                                        if (onlineStatus == 6) { // same world
+                                            int worldNum = Integer.parseInt(world.substring(world.length() - 1));
+                                            editor.getReplayMetadata().IPAddress4 = worldNum;
+                                        } else {
+                                            int worldNumExcluded = Integer.parseInt(world.substring(world.length() - 1));
+                                            if (worldNumExcluded <= 5) {
+                                                editor.getReplayMetadata().world_num_excluded |= (int) Math.pow(2, worldNumExcluded - 1);
+                                            } else {
+                                                editor.foundInauthentic = true;
+                                                Logger.Warn("@|white [" + keyCRC + "]|@ Inauthentic amount of worlds");
+                                            }
                                         }
                                     }
                                 }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                                Logger.Error("@|white [" + keyCRC + "]|@ " + String.format("error parsing opcode_update_friend, packet.timestamp: %d", packet.timestamp));
                             }
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                            Logger.Error("@|white [" + keyCRC + "]|@ " + String.format("error parsing opcode_update_friend, packet.timestamp: %d", packet.timestamp));
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_RECV_PM:
-                        if (Settings.dumpChat) {
-                            String recvPMSender1 = packet.readPaddedString(); //sender's name
-                            String recvPMSender2 = packet.readPaddedString(); //sender's name again
-                            Boolean recvPMSenderTwice = recvPMSender1.equals(recvPMSender2);
-                            if (!recvPMSenderTwice) {
-                                Logger.Warn("@|white [" + keyCRC + "]|@ Sender1 != Sender2 in OPCODE_RECV_PM!");
-                            }
-                            int recvPMModeratorStatus = packet.readByte();
-                            BigInteger recvPMMessageID = packet.readUnsignedLong();
-                            String recvPMMessage = packet.readRSCString();
+                            break;
+                        case PacketBuilder.OPCODE_RECV_PM:
+                            if (Settings.dumpChat) {
+                                String recvPMSender1 = packet.readPaddedString(); //sender's name
+                                String recvPMSender2 = packet.readPaddedString(); //sender's name again
+                                Boolean recvPMSenderTwice = recvPMSender1.equals(recvPMSender2);
+                                if (!recvPMSenderTwice) {
+                                    Logger.Warn("@|white [" + keyCRC + "]|@ Sender1 != Sender2 in OPCODE_RECV_PM!");
+                                }
+                                int recvPMModeratorStatus = packet.readByte();
+                                BigInteger recvPMMessageID = packet.readUnsignedLong();
+                                String recvPMMessage = packet.readRSCString();
 
-                            Scraper.m_chatSQL.add(
-                                "INSERT INTO `rscMessages`.`RECEIVE_PM` (`replayIndex`, `timestamp`, `sendersRepeated`, `moderator`, `messageID`, `message`) VALUES " +
-                                    String.format("('%d', '%d', '%s', '%d', '%d', '%s');\n",
-                                        keyCRC,
-                                        packet.timestamp,
-                                        recvPMSenderTwice ? "1" : "0",
-                                        recvPMModeratorStatus,
-                                        recvPMMessageID,
-                                        recvPMMessage.replaceAll("'", "''")
+                                thisReplaySqlStatements.add(
+                                    ScraperDatabase.newSQLStatement(
+                                        Scraper.m_chatSQL,
+                                        ScraperDatabase.getInsertStatement(
+                                            receivePMTable,
+                                            new Object[] {
+                                                keyCRC,
+                                                packet.timestamp,
+                                                recvPMSenderTwice ? "1" : "0",
+                                                recvPMModeratorStatus,
+                                                recvPMMessageID.toString(),
+                                                recvPMMessage
+                                            }
+                                        )
                                     )
-                            );
-                        }
-
-                        if (Settings.sanitizePrivateChat)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        break;
-                    case PacketBuilder.OPCODE_SEND_PM:
-                        if (Settings.dumpChat) {
-                            packet.readPaddedString(); //recipient's name
-                            String sendPMMessage = packet.readRSCString();
-                            Scraper.m_chatSQL.add(
-                                "INSERT INTO `rscMessages`.`SEND_PM_SERVER_ECHO` (`replayIndex`, `timestamp`, `messageCount`, `message`) VALUES " +
-                                    String.format("('%d', '%d', '%d', '%s');\n",
-                                        keyCRC,
-                                        packet.timestamp,
-                                        sendPMEchoCount++,
-                                        sendPMMessage.replaceAll("'", "''")
-                                    )
-                            );
-                        }
-                        if (Settings.sanitizePrivateChat)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        break;
-                    case PacketBuilder.OPCODE_CREATE_NPC: // 79
-                        if (Settings.needNpcCreation) {
-                            npcCacheCount = npcCount;
-                            npcCount = 0;
-                            for (int index = 0; index < npcCacheCount; ++index) {
-                                npcsCache[index] = npcs[index];
+                                );
                             }
 
-                            packet.startBitmask();
-                            int createNpcCount = packet.readBitmask(8);
-                            int animation;
-                            for (int npcIndex = 0; npcIndex < createNpcCount; npcIndex++) {
-                                Character npc = npcsCache[npcIndex];
-                                int reqUpdate = packet.readBitmask(1);
-                                if (reqUpdate == 1) {
-                                    int updateType = packet.readBitmask(1);
-                                    if (updateType != 0) { // stationary animation update
-                                        animation = packet.readBitmask(2);
-                                        if (animation != 3) {
-                                            animation <<= 2;
-                                            animation |= packet.readBitmask(2);
+                            if (Settings.sanitizePrivateChat)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            break;
+                        case PacketBuilder.OPCODE_SEND_PM:
+                            if (Settings.dumpChat) {
+                                packet.readPaddedString(); //recipient's name
+                                String sendPMMessage = packet.readRSCString();
+                                thisReplaySqlStatements.add(
+                                    ScraperDatabase.newSQLStatement(
+                                        Scraper.m_chatSQL,
+                                        ScraperDatabase.getInsertStatement(
+                                            sendPMServerEchoTable,
+                                            new Object[] {
+                                                keyCRC,
+                                                packet.timestamp,
+                                                sendPMEchoCount++,
+                                                sendPMMessage
+                                            }
+                                        )
+                                    )
+                                );
+                            }
+                            if (Settings.sanitizePrivateChat)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            break;
+                        case PacketBuilder.OPCODE_CREATE_NPC: // 79
+                            if (Settings.needNpcCreation) {
+                                npcCacheCount = npcCount;
+                                npcCount = 0;
+                                for (int index = 0; index < npcCacheCount; ++index) {
+                                    npcsCache[index] = npcs[index];
+                                }
 
-                                            npc.animationNext = animation;
-                                        } else {
-                                            // npc is removed
-                                            if (Settings.dumpNPCDamage) {
-                                                if (npc == null) continue;
-                                                if (removalIsKillshot(npc, localPID, playerX, playerY, keyCRC, packet.timestamp)) {
-                                                    Logger.Info("@|white [" + keyCRC + "]|@ killshot!!! PID " + npc.lastAttackerIndex + " killed NPC Index " + npc.serverIndex + " @ timestamp:" + packet.timestamp);
+                                packet.startBitmask();
+                                int createNpcCount = packet.readBitmask(8);
+                                int animation;
+                                for (int npcIndex = 0; npcIndex < createNpcCount; npcIndex++) {
+                                    Character npc = npcsCache[npcIndex];
+                                    int reqUpdate = packet.readBitmask(1);
+                                    if (reqUpdate == 1) {
+                                        int updateType = packet.readBitmask(1);
+                                        if (updateType != 0) { // stationary animation update
+                                            animation = packet.readBitmask(2);
+                                            if (animation != 3) {
+                                                animation <<= 2;
+                                                animation |= packet.readBitmask(2);
 
-                                                    if (npc.attackingPlayerServerIndex != localPID) {
-                                                        npc.incomingProjectileSprite = npc.lastSprite;
-                                                    }
-                                                    // npc was under attack at time of death, this is a kill shot
-                                                    switch (npc.incomingProjectileSprite) {
-                                                        case -1:
-                                                            Logger.Info("@|white [" + keyCRC + "]|@ incoming projectile sprite not set, but npc was damaged while not in melee combat");
-                                                            break;
-                                                        case 2: // ranged projectile
+                                                npc.animationNext = animation;
+                                            } else {
+                                                // npc is removed
+                                                if (Settings.dumpNPCDamage) {
+                                                    if (npc == null) continue;
+                                                    if (removalIsKillshot(npc, localPID, playerX, playerY, keyCRC, packet.timestamp)) {
+                                                        Logger.Info("@|white [" + keyCRC + "]|@ killshot!!! PID " + npc.lastAttackerIndex + " killed NPC Index " + npc.serverIndex + " @ timestamp:" + packet.timestamp);
 
-                                                            // best case scenario. We know who is attacking, that it is definitely ranged, and all stats
+                                                        if (npc.attackingPlayerServerIndex != localPID) {
+                                                            npc.incomingProjectileSprite = npc.lastSprite;
+                                                        }
+                                                        // npc was under attack at time of death, this is a kill shot
+                                                        switch (npc.incomingProjectileSprite) {
+                                                            case -1:
+                                                                Logger.Info("@|white [" + keyCRC + "]|@ incoming projectile sprite not set, but npc was damaged while not in melee combat");
+                                                                break;
+                                                            case 2: // ranged projectile
 
-                                                            // determine bow wielded; might not exist if spear, dart, throwing knife
-                                                            int bow = -1;
-                                                            for (int slot = 0; slot < 30; slot++) {
-                                                                if (inventoryItemEquipped[slot] == 1) {
-                                                                    switch (inventoryItems[slot]) {
-                                                                        case 59:
-                                                                        case 60:
-                                                                        case 188:
-                                                                        case 189:
-                                                                        case 648:
-                                                                        case 649:
-                                                                        case 650:
-                                                                        case 651:
-                                                                        case 652:
-                                                                        case 653:
-                                                                        case 654:
-                                                                        case 655:
-                                                                        case 656:
-                                                                        case 657:
-                                                                            bow = inventoryItems[slot];
+                                                                // best case scenario. We know who is attacking, that it is definitely ranged, and all stats
+
+                                                                // determine bow wielded; might not exist if spear, dart, throwing knife
+                                                                int bow = -1;
+                                                                for (int slot = 0; slot < 30; slot++) {
+                                                                    if (inventoryItemEquipped[slot] == 1) {
+                                                                        switch (inventoryItems[slot]) {
+                                                                            case 59:
+                                                                            case 60:
+                                                                            case 188:
+                                                                            case 189:
+                                                                            case 648:
+                                                                            case 649:
+                                                                            case 650:
+                                                                            case 651:
+                                                                            case 652:
+                                                                            case 653:
+                                                                            case 654:
+                                                                            case 655:
+                                                                            case 656:
+                                                                            case 657:
+                                                                                bow = inventoryItems[slot];
+                                                                        }
                                                                     }
                                                                 }
-                                                            }
 
-                                                            Scraper.m_damageSQL.add(
-                                                                "INSERT INTO `rscMessages`.`unambiguousRanged` (`replayIndex`, `timestamp`, `npcId`, `damageTaken`, `currentHP`, `maxHP`, `lastAmmo`, `bow`, `curRangedStat`, `killshot`) VALUES " +
-                                                                    String.format("('%d', '%d', '%d', '%d', '%d', '%d', '%d', '%d', '%d', '%d');\n",
-                                                                        keyCRC,
-                                                                        packet.timestamp,
-                                                                        npc.npcId,
-                                                                        npc.healthCurrent, // damage taken, assumed to be current health
-                                                                        npc.healthCurrent,
-                                                                        npc.healthMax,
-                                                                        lastAmmo, // arrow/bolt/knife/dart/spear was determined in inventory updates
-                                                                        bow,
-                                                                        playerCurStat[4], // ranged level
-                                                                        1 // killshot
+                                                                thisReplaySqlStatements.add(
+                                                                    ScraperDatabase.newSQLStatement(
+                                                                        Scraper.m_damageSQL,
+                                                                        ScraperDatabase.getInsertStatement(
+                                                                            unambiguousRangedTable,
+                                                                            new Object[] {
+                                                                                keyCRC,
+                                                                                packet.timestamp,
+                                                                                npc.npcId,
+                                                                                npc.healthCurrent, // damage taken, assumed to be current health
+                                                                                npc.healthCurrent,
+                                                                                npc.healthMax,
+                                                                                lastAmmo, // arrow/bolt/knife/dart/spear was determined in inventory updates
+                                                                                bow,
+                                                                                playerCurStat[Game.STAT_RANGED],
+                                                                                1 // killshot
+                                                                            }
+                                                                        )
                                                                     )
-                                                            );
+                                                                );
 
 
+                                                                break;
+                                                            case 3: // gnomeball
+                                                                Logger.Info("@|white [" + keyCRC + "]|@ What in tarnation? enemy killed by gnomeball??");
+                                                                break;
+                                                            case 1: // magic spell
+                                                            case 4: // iban blast
+                                                            case 6: // god spell
+                                                                break;
+                                                            case 5: // cannonball
+                                                                break;
+                                                            default:
+                                                                Logger.Info("@|white [" + keyCRC + "]|@ unknown projectile, shouldn't be possible;; timestamp: " + packet.timestamp);
+                                                                break;
+                                                        }
+
+                                                        npc.attackingPlayerServerIndex = -1;
+                                                        npc.incomingProjectileSprite = -1;
+                                                    }
+                                                }
+
+                                                continue;
+                                            }
+                                        } else { // npc is moving to another tile
+                                            int nextAnim = packet.readBitmask(3); // animation
+                                            int var11 = npc.waypointCurrent;
+                                            int var12 = npc.waypointsX[var11];
+                                            if (nextAnim == 2 || nextAnim == 1 || nextAnim == 3) {
+                                                var12 += 128;
+                                            }
+
+                                            int var13 = npc.waypointsY[var11];
+                                            if (nextAnim == 6 || nextAnim == 5 || nextAnim == 7) {
+                                                var12 -= 128;
+                                            }
+
+                                            if (nextAnim == 4 || nextAnim == 3 || nextAnim == 5) {
+                                                var13 += 128;
+                                            }
+
+                                            if (nextAnim == 0 || nextAnim == 1 || nextAnim == 7) {
+                                                var13 -= 128;
+                                            }
+
+                                            npc.waypointCurrent = var11 = (var11 + 1) % 10;
+                                            npc.animationNext = nextAnim;
+                                            npc.waypointsX[var11] = var12;
+                                            npc.waypointsY[var11] = var13;
+                                        }
+                                    }
+
+                                    npcs[npcCount++] = npc;
+                                }
+
+
+                                while (packet.tellBitmask() + 34 < packet.data.length * 8) {
+                                    int npcServerIndex = packet.readBitmask(12);
+                                    int npcXCoordinate = packet.readBitmask(5);
+                                    int npcYCoordinate = packet.readBitmask(5);
+                                    int npcAnimation = packet.readBitmask(4);
+                                    int npcId = packet.readBitmask(10);
+
+                                    if (npcXCoordinate > 15) {
+                                        npcXCoordinate -= 32;
+                                    }
+                                    if (npcYCoordinate > 15) {
+                                        npcYCoordinate -= 32;
+                                    }
+
+                                    int x = npcXCoordinate + playerX + planeFloor * floorYOffset;
+                                    int y = npcYCoordinate + playerY;
+
+                                    if (Settings.dumpNpcLocs) {
+                                        thisReplaySqlStatements.add(
+                                            ScraperDatabase.newSQLStatement(
+                                                Scraper.m_npcLocsSQL,
+                                                ScraperDatabase.getInsertStatement(
+                                                    npcLocationsTable,
+                                                    new Object[] {
+                                                        keyCRC,
+                                                        packet.timestamp,
+                                                        npcId,
+                                                        npcServerIndex,
+                                                        x,
+                                                        y
+                                                    }
+                                                )
+                                            )
+                                        );
+                                    }
+
+                                    createNpc(npcServerIndex, npcId, x, y, npcAnimation);
+                                }
+
+                                packet.endBitmask();
+                            }
+
+                            break;
+                        case PacketBuilder.OPCODE_UPDATE_NPC: // 104
+                            if (Settings.dumpMessages || Settings.dumpNPCDamage) {
+                                int updateNpcCount = packet.readUnsignedShort();
+                                for (int i = 0; i < updateNpcCount; i++) {
+                                    int npcServerIndex = packet.readUnsignedShort();
+
+                                    if (npcServerIndex >= 5000) {
+                                        Logger.Warn("Received NPC server index out of bounds!! " + fname);
+                                        if (fname.contains("1e_Luis/Quests/Grand Tree/Grand Tree Pt2")) {
+                                            npcServerIndex -= 4096; // Luis got a bad bit, probably a network error.
+                                        }
+                                    } else if (npcsServer[npcServerIndex] == null && npcServerIndex >= 4096) {
+                                        Logger.Warn("Received NPC server index not defined...!! decrementing by 4096 " + fname);
+                                        npcServerIndex -= 4096;
+                                        if (npcsServer[npcServerIndex] == null) {
+                                            Logger.Error("That didn't help. May be a problem in RSC-");
+                                        }
+                                    }
+
+
+                                    int updateType = packet.readByte();
+                                    if (updateType == 1) { // npc chat
+                                        int pidTalkingTo = packet.readUnsignedShort();
+                                        String updateNPCMessage = packet.readRSCString();
+                                        if (Settings.dumpMessages) {
+                                            thisReplaySqlStatements.add(
+                                                ScraperDatabase.newSQLStatement(
+                                                    Scraper.m_messageSQL,
+                                                    ScraperDatabase.getInsertStatement(
+                                                        updateNpcsType1Table,
+                                                        new Object[] {
+                                                            keyCRC,
+                                                            packet.timestamp,
+                                                            npcsServer[npcServerIndex].npcId,
+                                                            pidTalkingTo,
+                                                            updateNPCMessage
+                                                        }
+                                                    )
+                                                )
+                                            );
+                                        }
+                                    } else if (updateType == 2) { // combat update
+                                        int npcDamageTaken = packet.readUnsignedByte();
+                                        int npcCurrentHP = packet.readUnsignedByte();
+                                        int npcMaxHP = packet.readUnsignedByte();
+                                        npcsServer[npcServerIndex].healthCurrent = npcCurrentHP;
+                                        npcsServer[npcServerIndex].healthMax = npcMaxHP;
+
+                                        if (Settings.dumpNPCDamage) {
+                                            // determine how the npc is being attacked
+                                            if (npcsServer[npcServerIndex] != null) {
+
+                                                if (npcsServer[npcServerIndex].animationNext >= 8) {
+                                                    // in melee combat, but not necessarily have taken melee damage, could be spell
+                                                    if (npcsServer[npcServerIndex].incomingProjectileSprite != -1) {
+                                                        // TODO: can we assume that this means that this specific damage update was in fact ranged/mage damage?
+                                                        npcsServer[npcServerIndex].attackingPlayerServerIndex = -1;
+                                                        npcsServer[npcServerIndex].incomingProjectileSprite = -1;
+                                                    }
+
+                                                    // determine who is possibly attacking
+
+                                                    // need to check if local player shares same X & Y coordinate as this NPC & has melee stance
+                                                    if (playerX == npcsServer[npcServerIndex].currentX && playerY == npcsServer[npcServerIndex].currentY && playerAnim >= 8) {
+                                                        // possible & likely that player is the same player attacking NPC, need to check there aren't 2 fights on the same tile
+                                                    }
+                                                } else {
+                                                    // not possible for this to be melee damage :-)
+                                                    switch (npcsServer[npcServerIndex].incomingProjectileSprite) {
+                                                        case -1:
+                                                            Logger.Info("@|white [" + keyCRC + "]|@ incoming projectile sprite not set, but npc was damaged while not in melee combat;; timestamp: " + packet.timestamp);
+                                                            break;
+                                                        case 1: // magic projectile
+                                                            if (npcsServer[npcServerIndex].attackingPlayerServerIndex == localPID) {
+                                                                // must determine the spell that was used
+                                                                // must determine mage level & magic bonus
+                                                            } else {
+                                                                // useless, since we don't know what spell was used
+                                                            }
+                                                            break;
+                                                        case 2: // ranged projectile
+                                                            if (npcsServer[npcServerIndex].attackingPlayerServerIndex == localPID) {
+                                                                // best case scenario. We know who is attacking, that it is definitely ranged, and all stats
+
+                                                                // determine bow wielded; might not exist if spear, dart, throwing knife
+                                                                int bow = -1;
+                                                                for (int slot = 0; slot < 30; slot++) {
+                                                                    if (inventoryItemEquipped[slot] == 1) {
+                                                                        switch (inventoryItems[slot]) {
+                                                                            case 59:
+                                                                            case 60:
+                                                                            case 188:
+                                                                            case 189:
+                                                                            case 648:
+                                                                            case 649:
+                                                                            case 650:
+                                                                            case 651:
+                                                                            case 652:
+                                                                            case 653:
+                                                                            case 654:
+                                                                            case 655:
+                                                                            case 656:
+                                                                            case 657:
+                                                                                bow = inventoryItems[slot];
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                thisReplaySqlStatements.add(
+                                                                    ScraperDatabase.newSQLStatement(
+                                                                        Scraper.m_damageSQL,
+                                                                        ScraperDatabase.getInsertStatement(
+                                                                            unambiguousRangedTable,
+                                                                            new Object[] {
+                                                                                keyCRC,
+                                                                                packet.timestamp,
+                                                                                npcsServer[npcServerIndex].npcId,
+                                                                                npcDamageTaken,
+                                                                                npcCurrentHP,
+                                                                                npcMaxHP,
+                                                                                lastAmmo, // arrow/bolt/knife/dart/spear was determined in inventory updates
+                                                                                bow,
+                                                                                playerCurStat[Game.STAT_RANGED],
+                                                                                0 // not a kill shot
+                                                                            }
+                                                                        )
+                                                                    )
+                                                                );
+
+                                                            } else {
+                                                                // much less useful, since we don't know player's ranged level.
+                                                                // arrow could still be sometimes determined if player doesn't pick it up
+                                                                // and then we could maybe see the expected distribution of hits for some unknown level
+                                                            }
                                                             break;
                                                         case 3: // gnomeball
-                                                            Logger.Info("@|white [" + keyCRC + "]|@ What in tarnation? enemy killed by gnomeball??");
                                                             break;
-                                                        case 1: // magic spell
                                                         case 4: // iban blast
-                                                        case 6: // god spell
                                                             break;
                                                         case 5: // cannonball
+                                                            break;
+                                                        case 6: // god spell
                                                             break;
                                                         default:
                                                             Logger.Info("@|white [" + keyCRC + "]|@ unknown projectile, shouldn't be possible;; timestamp: " + packet.timestamp);
                                                             break;
                                                     }
 
-                                                    npc.attackingPlayerServerIndex = -1;
-                                                    npc.incomingProjectileSprite = -1;
-                                                }
-                                            }
-
-                                            continue;
-                                        }
-                                    } else { // npc is moving to another tile
-                                        int nextAnim = packet.readBitmask(3); // animation
-                                        int var11 = npc.waypointCurrent;
-                                        int var12 = npc.waypointsX[var11];
-                                        if (nextAnim == 2 || nextAnim == 1 || nextAnim == 3) {
-                                            var12 += 128;
-                                        }
-
-                                        int var13 = npc.waypointsY[var11];
-                                        if (nextAnim == 6 || nextAnim == 5 || nextAnim == 7) {
-                                            var12 -= 128;
-                                        }
-
-                                        if (nextAnim == 4 || nextAnim == 3 || nextAnim == 5) {
-                                            var13 += 128;
-                                        }
-
-                                        if (nextAnim == 0 || nextAnim == 1 || nextAnim == 7) {
-                                            var13 -= 128;
-                                        }
-
-                                        npc.waypointCurrent = var11 = (var11 + 1) % 10;
-                                        npc.animationNext = nextAnim;
-                                        npc.waypointsX[var11] = var12;
-                                        npc.waypointsY[var11] = var13;
-                                    }
-                                }
-
-                                npcs[npcCount++] = npc;
-                            }
-
-
-                            while (packet.tellBitmask() + 34 < packet.data.length * 8) {
-                                int npcServerIndex = packet.readBitmask(12);
-                                int npcXCoordinate = packet.readBitmask(5);
-                                int npcYCoordinate = packet.readBitmask(5);
-                                int npcAnimation = packet.readBitmask(4);
-                                int npcId = packet.readBitmask(10);
-
-                                if (npcXCoordinate > 15) {
-                                    npcXCoordinate -= 32;
-                                }
-                                if (npcYCoordinate > 15) {
-                                    npcYCoordinate -= 32;
-                                }
-
-                                if (Settings.dumpNpcLocs) {
-                                    Scraper.m_npcLocCSV.add( String.format("%s,%d,%f,%d,%d,%d,%d\n",
-                                        fname,
-                                        packet.timestamp,
-                                        (packet.timestamp / 50.0) + editor.getReplayMetadata().dateModified,
-                                        npcId,
-                                        npcServerIndex,
-                                        npcXCoordinate + playerX + planeFloor * floorYOffset,
-                                        npcYCoordinate + playerY
-                                    ));
-                                }
-                                int x = npcXCoordinate + playerX + planeFloor * floorYOffset;
-                                int y = npcYCoordinate + playerY;
-
-                                createNpc(npcServerIndex, npcId, x, y, npcAnimation);
-                            }
-
-                            packet.endBitmask();
-                        }
-
-                        break;
-                    case PacketBuilder.OPCODE_UPDATE_NPC: // 104
-                        if (Settings.dumpMessages || Settings.dumpNPCDamage) {
-                            int updateNpcCount = packet.readUnsignedShort();
-                            for (int i = 0; i < updateNpcCount; i++) {
-                                int npcServerIndex = packet.readUnsignedShort();
-                                int updateType = packet.readByte();
-                                if (updateType == 1) { // npc chat
-                                    int pidTalkingTo = packet.readUnsignedShort();
-                                    String updateNPCMessage = packet.readRSCString();
-                                    if (Settings.dumpMessages) {
-                                        Scraper.m_messageSQL.add(
-                                            "INSERT INTO `rscMessages`.`UPDATE_NPCS_TYPE_1` (`replayIndex`, `timestamp`, `npcId`, `pidTalkingTo`, `message`) VALUES " +
-                                                String.format("('%d', '%d', '%d', '%d', '%s');\n",
-                                                    keyCRC,
-                                                    packet.timestamp,
-                                                    npcsServer[npcServerIndex].npcId,
-                                                    pidTalkingTo,
-                                                    updateNPCMessage.replaceAll("'", "''")
-                                                )
-                                        );
-                                    }
-                                } else if (updateType == 2) { // combat update
-                                    int npcDamageTaken = packet.readUnsignedByte();
-                                    int npcCurrentHP = packet.readUnsignedByte();
-                                    int npcMaxHP = packet.readUnsignedByte();
-                                    npcsServer[npcServerIndex].healthCurrent = npcCurrentHP;
-                                    npcsServer[npcServerIndex].healthMax = npcMaxHP;
-
-                                    if (Settings.dumpNPCDamage) {
-                                        // determine how the npc is being attacked
-                                        if (npcsServer[npcServerIndex] != null) {
-
-                                            if (npcsServer[npcServerIndex].animationNext >= 8) {
-                                                // in melee combat, but not necessarily have taken melee damage, could be spell
-                                                if (npcsServer[npcServerIndex].incomingProjectileSprite != -1) {
-                                                    // TODO: can we assume that this means that this specific damage update was in fact ranged/mage damage?
                                                     npcsServer[npcServerIndex].attackingPlayerServerIndex = -1;
                                                     npcsServer[npcServerIndex].incomingProjectileSprite = -1;
                                                 }
-
-                                                // determine who is possibly attacking
-
-                                                // need to check if local player shares same X & Y coordinate as this NPC & has melee stance
-                                                if (playerX == npcsServer[npcServerIndex].currentX && playerY == npcsServer[npcServerIndex].currentY && playerAnim >= 8) {
-                                                    // possible & likely that player is the same player attacking NPC, need to check there aren't 2 fights on the same tile
-                                                }
                                             } else {
-                                                // not possible for this to be melee damage :-)
-                                                switch (npcsServer[npcServerIndex].incomingProjectileSprite) {
-                                                    case -1:
-                                                        Logger.Info("@|white [" + keyCRC + "]|@ incoming projectile sprite not set, but npc was damaged while not in melee combat;; timestamp: " + packet.timestamp);
-                                                        break;
-                                                    case 1: // magic projectile
-                                                        if (npcsServer[npcServerIndex].attackingPlayerServerIndex == localPID) {
-                                                            // must determine the spell that was used
-                                                            // must determine mage level & magic bonus
-                                                        } else {
-                                                            // useless, since we don't know what spell was used
-                                                        }
-                                                        break;
-                                                    case 2: // ranged projectile
-                                                        if (npcsServer[npcServerIndex].attackingPlayerServerIndex == localPID) {
-                                                            // best case scenario. We know who is attacking, that it is definitely ranged, and all stats
-
-                                                            // determine bow wielded; might not exist if spear, dart, throwing knife
-                                                            int bow = -1;
-                                                            for (int slot = 0; slot < 30; slot++) {
-                                                                if (inventoryItemEquipped[slot] == 1) {
-                                                                    switch (inventoryItems[slot]) {
-                                                                        case 59:
-                                                                        case 60:
-                                                                        case 188:
-                                                                        case 189:
-                                                                        case 648:
-                                                                        case 649:
-                                                                        case 650:
-                                                                        case 651:
-                                                                        case 652:
-                                                                        case 653:
-                                                                        case 654:
-                                                                        case 655:
-                                                                        case 656:
-                                                                        case 657:
-                                                                            bow = inventoryItems[slot];
-                                                                    }
-                                                                }
-                                                            }
-
-                                                            Scraper.m_damageSQL.add(
-                                                                "INSERT INTO `rscMessages`.`unambiguousRanged` (`replayIndex`, `timestamp`, `npcId`, `damageTaken`, `currentHP`, `maxHP`, `lastAmmo`, `bow`, `curRangedStat`, `killshot`) VALUES " +
-                                                                    String.format("('%d', '%d', '%d', '%d', '%d', '%d', '%d', '%d', '%d', '%d');\n",
-                                                                        keyCRC,
-                                                                        packet.timestamp,
-                                                                        npcsServer[npcServerIndex].npcId,
-                                                                        npcDamageTaken,
-                                                                        npcCurrentHP,
-                                                                        npcMaxHP,
-                                                                        lastAmmo, // arrow/bolt/knife/dart/spear was determined in inventory updates
-                                                                        bow,
-                                                                        playerCurStat[4], // ranged level
-                                                                        0 // not a kill shot
-                                                                    )
-                                                            );
-
-                                                        } else {
-                                                            // much less useful, since we don't know player's ranged level.
-                                                            // arrow could still be sometimes determined if player doesn't pick it up
-                                                            // and then we could maybe see the expected distribution of hits for some unknown level
-                                                        }
-                                                        break;
-                                                    case 3: // gnomeball
-                                                        break;
-                                                    case 4: // iban blast
-                                                        break;
-                                                    case 5: // cannonball
-                                                        break;
-                                                    case 6: // god spell
-                                                        break;
-                                                    default:
-                                                        Logger.Info("@|white [" + keyCRC + "]|@ unknown projectile, shouldn't be possible;; timestamp: " + packet.timestamp);
-                                                        break;
-                                                }
-
-                                                npcsServer[npcServerIndex].attackingPlayerServerIndex = -1;
-                                                npcsServer[npcServerIndex].incomingProjectileSprite = -1;
+                                                // some other player possibly shooting an an NPC off-screen that we don't know about?
                                             }
-                                        } else {
-                                            // some other player possibly shooting an an NPC off-screen that we don't know about?
                                         }
                                     }
                                 }
                             }
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_SCENERY_HANDLER:
-                        if (Settings.dumpScenery) {
-                            length = packet.data.length;
-                            while (length > 0) {
-                                if (packet.readUnsignedByte() == 255) {
-                                    packet.skip(2);
-                                    length -= 3;
-                                } else {
-                                    packet.skip(-1);
-                                    int type = handleSceneryIDConvert(packet.readUnsignedShort());
-                                    int x = playerX + packet.readByte();
-                                    int y = playerY + packet.readByte();
-                                    length -= 4;
+                            break;
+                        case PacketBuilder.OPCODE_SCENERY_HANDLER:
+                            if (Settings.dumpScenery) {
+                                length = packet.data.length;
+                                while (length > 0) {
+                                    if (packet.readUnsignedByte() == 255) {
+                                        packet.skip(2);
+                                        length -= 3;
+                                    } else {
+                                        packet.skip(-1);
+                                        int type = handleSceneryIDConvert(packet.readUnsignedShort());
+                                        int x = playerX + packet.readByte();
+                                        int y = playerY + packet.readByte();
+                                        length -= 4;
 
-                                    if (planeX != Game.WORLD_PLANE_X || planeY != Game.WORLD_PLANE_Y || floorYOffset != Game.WORLD_Y_OFFSET || planeFloor > 3 || planeFloor < 0) {
-                                        Logger.Error("@|white [" + keyCRC + "]|@ Invalid region or not logged in; Aborting");
-                                        break;
-                                    }
-
-                                    if (!validCoordinates(x, y)) {
-                                        Logger.Error("@|white [" + keyCRC + "]|@ Invalid coordinates " + x + ", " + y + "; Aborting");
-                                        break;
-                                    } else if (type != 60000 && !sceneryIDBlacklisted(type, x, y)) {
-                                        if (type < 0 || type > 1188) {
-                                            Logger.Error("@|white [" + keyCRC + "]|@ Scenery id " + type + " at " + x + ", " + y + " is invalid; Aborting");
+                                        if (planeX != Game.WORLD_PLANE_X || planeY != Game.WORLD_PLANE_Y || floorYOffset != Game.WORLD_Y_OFFSET || planeFloor > 3 || planeFloor < 0) {
+                                            Logger.Error("@|white [" + keyCRC + "]|@ Invalid region or not logged in; Aborting");
                                             break;
                                         }
 
-                                        int key = packCoordinate(x, y);
-                                        //System.out.println("x: " + x + ", y: " + y);
-                                        if (sceneryLocs.containsKey(key))
-                                            type = handleSceneryIDConflict(sceneryLocs.get(key), type);
-                                        sceneryLocs.put(key, type);
+                                        if (!validCoordinates(x, y)) {
+                                            Logger.Error("@|white [" + keyCRC + "]|@ Invalid coordinates " + x + ", " + y + "; Aborting");
+                                            break;
+                                        } else if (type != 60000 && !sceneryIDBlacklisted(type, x, y)) {
+                                            if (type < 0 || type > 1188) {
+                                                Logger.Error("@|white [" + keyCRC + "]|@ Scenery id " + type + " at " + x + ", " + y + " is invalid; Aborting");
+                                                break;
+                                            }
+
+                                            int key = packCoordinate(x, y);
+                                            //System.out.println("x: " + x + ", y: " + y);
+                                            if (sceneryLocs.containsKey(key))
+                                                type = handleSceneryIDConflict(sceneryLocs.get(key), type);
+                                            sceneryLocs.put(key, type);
+                                        }
                                     }
                                 }
                             }
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_BOUNDARY_HANDLER:
-                        if (Settings.dumpBoundaries) {
-                            length = packet.data.length;
-                            while (length > 0) {
-                                if (packet.readUnsignedByte() == 255) {
-                                    packet.skip(2);
-                                    length -= 3;
-                                } else {
-                                    packet.skip(-1);
-                                    int type = packet.readUnsignedShort();
-                                    int x = playerX + packet.readByte();
-                                    int y = playerY + packet.readByte();
-                                    byte direction = packet.readByte();
-                                    length -= 5;
+                            break;
+                        case PacketBuilder.OPCODE_BOUNDARY_HANDLER:
+                            if (Settings.dumpBoundaries) {
+                                length = packet.data.length;
+                                while (length > 0) {
+                                    if (packet.readUnsignedByte() == 255) {
+                                        packet.skip(2);
+                                        length -= 3;
+                                    } else {
+                                        packet.skip(-1);
+                                        int type = packet.readUnsignedShort();
+                                        int x = playerX + packet.readByte();
+                                        int y = playerY + packet.readByte();
+                                        byte direction = packet.readByte();
+                                        length -= 5;
 
-                                    if (planeX != Game.WORLD_PLANE_X || planeY != Game.WORLD_PLANE_Y || floorYOffset != Game.WORLD_Y_OFFSET || planeFloor > 3 || planeFloor < 0) {
-                                        Logger.Error("@|white [" + keyCRC + "]|@ Invalid region or not logged in; Aborting");
-                                        break;
-                                    }
-
-                                    if (!validCoordinates(x, y)) {
-                                        Logger.Error("@|white [" + keyCRC + "]|@ Invalid coordinates " + x + ", " + y + "; Aborting");
-                                        break;
-                                    } else if (type != 0xFFFF && !boundaryIDBlacklisted(type, x, y)) {
-                                        if (type < 0 || type > 213) {
-                                            Logger.Error("@|white [" + keyCRC + "]|@ Boundary id " + type + " at " + x + ", " + y + " is invalid; Aborting");
+                                        if (planeX != Game.WORLD_PLANE_X || planeY != Game.WORLD_PLANE_Y || floorYOffset != Game.WORLD_Y_OFFSET || planeFloor > 3 || planeFloor < 0) {
+                                            Logger.Error("@|white [" + keyCRC + "]|@ Invalid region or not logged in; Aborting");
                                             break;
                                         }
 
-                                        int key = packCoordinate(x, y);
-                                        int value = handleBoundaryIDConvert(packCoordinate(type, direction));
-                                        if (boundaryLocs.containsKey(key))
-                                            value = handleBoundaryIDConflict(boundaryLocs.get(key), value);
-                                        boundaryLocs.put(key, value);
+                                        if (!validCoordinates(x, y)) {
+                                            Logger.Error("@|white [" + keyCRC + "]|@ Invalid coordinates " + x + ", " + y + "; Aborting");
+                                            break;
+                                        } else if (type != 0xFFFF && !boundaryIDBlacklisted(type, x, y)) {
+                                            if (type < 0 || type > 213) {
+                                                Logger.Error("@|white [" + keyCRC + "]|@ Boundary id " + type + " at " + x + ", " + y + " is invalid; Aborting");
+                                                break;
+                                            }
+
+                                            int key = packCoordinate(x, y);
+                                            int value = handleBoundaryIDConvert(packCoordinate(type, direction));
+                                            if (boundaryLocs.containsKey(key))
+                                                value = handleBoundaryIDConflict(boundaryLocs.get(key), value);
+                                            boundaryLocs.put(key, value);
+                                        }
+                                    }
+                                }
+                            } else if (Settings.checkBoundaryRemoval) {
+                                while (length > 0) {
+                                    if (packet.readUnsignedByte() == 255) {
+                                        int x = playerX + packet.readByte();
+                                        int y = playerY + packet.readByte();
+                                        if (Scraper.worldManager.getViewArea(x, y).getBoundary(x, y) != null) {
+                                            Logger.Info("@|white [" + keyCRC + "]|@ " + String.format("@|red BOUNDARY REMOVAL ACTUALLY DID SOMETHING @ %d,%d IN REPLAY %s AT TIMESTAMP %d|@", x, y, fname, packet.timestamp));
+                                        }
+                                        length -= 3;
+                                    } else {
+                                        length -= 5;
                                     }
                                 }
                             }
-                        } else if (Settings.checkBoundaryRemoval) {
-                            while (length > 0) {
-                                if (packet.readUnsignedByte() == 255) {
-                                    int x = playerX + packet.readByte();
-                                    int y = playerY + packet.readByte();
-                                    if (Scraper.worldManager.getViewArea(x, y).getBoundary(x, y) != null) {
-                                        Logger.Info("@|white [" + keyCRC + "]|@ " + String.format("@|red BOUNDARY REMOVAL ACTUALLY DID SOMETHING @ %d,%d IN REPLAY %s AT TIMESTAMP %d|@", x, y, fname, packet.timestamp));
+                            break;
+                        case PacketBuilder.OPCODE_SLEEP_WORD:
+                            if (Settings.dumpSleepWords) {
+                                interestingSleepPackets.add(packet);
+                            }
+                            break;
+                        case PacketBuilder.OPCODE_WAKE_UP:
+                            if (Settings.dumpSleepWords) {
+                                interestingSleepPackets.add(packet);
+                            }
+                            break;
+                        case PacketBuilder.OPCODE_CLOSE_CONNECTION_NOTIFY:
+                            if (appendingToReplay) {
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            }
+                            break;
+                        case PacketBuilder.OPCODE_SHOW_SHOP:
+                            if (Settings.dumpShops) {
+                                int shopItemCount = packet.readUnsignedByte();
+                                byte shopType = packet.readByte();
+                                int sellpricemod = packet.readUnsignedByte();
+                                int buypricemod = packet.readUnsignedByte();
+                                int priceMultiplier = packet.readUnsignedByte();
+                                for (int index = 0; index < shopItemCount; ++index) {
+                                    int itemId = packet.readUnsignedShort();
+                                    int itemCount = packet.readUnsignedShort();
+                                    int itemPrice = packet.readUnsignedShort();
+
+                                    if (itemCount > highestStoreStock) {
+                                        Logger.Info("@|white [" + keyCRC + "]|@ New max amount found: " + itemCount + " in replay " + fname);
+                                        highestStoreStock = itemCount;
                                     }
-                                    length -= 3;
-                                } else {
-                                    length -= 5;
                                 }
                             }
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_SLEEP_WORD:
-                        if (Settings.dumpSleepWords) {
-                            interestingSleepPackets.put(interestingSleepPackets.size(), packet);
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_WAKE_UP:
-                        if (Settings.dumpSleepWords) {
-                            interestingSleepPackets.put(interestingSleepPackets.size(), packet);
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_CLOSE_CONNECTION_NOTIFY:
-                        if (appendingToReplay) {
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_SHOW_SHOP:
-                        if (Settings.dumpShops) {
-                            int shopItemCount = packet.readUnsignedByte();
-                            byte shopType = packet.readByte();
-                            int sellpricemod = packet.readUnsignedByte();
-                            int buypricemod = packet.readUnsignedByte();
-                            int priceMultiplier = packet.readUnsignedByte();
-                            for (int index = 0; index < shopItemCount; ++ index) {
-                                int itemId = packet.readUnsignedShort();
-                                int itemCount = packet.readUnsignedShort();
-                                int itemPrice = packet.readUnsignedShort();
+                            break;
+                        case PacketBuilder.OPCODE_SET_INVENTORY: // 53
+                            if (Settings.dumpInventories || Settings.dumpNPCDamage || Settings.dumpRNGEvents) {
+                                int inventoryItemCount = packet.readUnsignedByte();
 
-                                if (itemCount > highestStoreStock) {
-                                    Logger.Info("@|white [" + keyCRC + "]|@ New max amount found: " + itemCount + " in replay " + fname);
-                                    highestStoreStock = itemCount;
+                                inventoryItemsAllCount = new int[1290];
+                                for (int i = 0; i < 1290; i++) {
+                                    inventoryItemsAllCount[i] = 0;
+                                }
+
+                                for (int slot = 0; slot < inventoryItemCount; slot++) {
+                                    int itemIDAndEquipped = packet.readUnsignedShort();
+                                    int equipped = ((itemIDAndEquipped >> 15) & 0x1);
+                                    int itemID = itemIDAndEquipped & 0x7FFF;
+                                    long itemStack = 1;
+                                    if (JGameData.itemStackable[itemID]) {
+                                        itemStack = packet.readUnsignedInt3();
+                                    }
+                                    if (Settings.dumpInventories) {
+                                        thisReplaySqlStatements.add(
+                                            ScraperDatabase.newSQLStatement(
+                                                Scraper.m_inventorySQL,
+                                                ScraperDatabase.getInsertStatement(
+                                                    inventoriesTable,
+                                                    new Object[] {
+                                                        keyCRC,
+                                                        packet.timestamp,
+                                                        slot,
+                                                        equipped,
+                                                        itemID,
+                                                        itemStack,
+                                                        packet.opcode
+                                                    }
+                                                )
+                                            )
+                                        );
+                                    }
+
+                                    inventoryItemsAllCount[itemID] += itemStack;
+
+                                    inventoryItems[slot] = itemID;
+                                    inventoryStackAmounts[slot] = itemStack;
+                                    inventoryItemEquipped[slot] = equipped;
                                 }
                             }
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_SET_INVENTORY: // 53
-                        if (Settings.dumpInventories || Settings.dumpNPCDamage) {
-                            int inventoryItemCount = packet.readUnsignedByte();
-
-                            inventoryItemsAllCount = new int[1290];
-                            for (int i=0; i < 1290; i++) {
-                                inventoryItemsAllCount[i] = 0;
+                            break;
+                        case PacketBuilder.OPCODE_SET_INVENTORY_SLOT: // 90
+                            if (packet.data == null) {
+                                break;
                             }
 
-                            for (int slot = 0; slot < inventoryItemCount; slot++) {
+                            if (Settings.dumpInventories || Settings.dumpNPCDamage || Settings.dumpRNGEvents) {
+                                int slot = packet.readUnsignedByte();
                                 int itemIDAndEquipped = packet.readUnsignedShort();
                                 int equipped = ((itemIDAndEquipped >> 15) & 0x1);
                                 int itemID = itemIDAndEquipped & 0x7FFF;
@@ -1330,122 +1538,234 @@ public class ScraperProcessor implements Runnable {
                                 if (JGameData.itemStackable[itemID]) {
                                     itemStack = packet.readUnsignedInt3();
                                 }
-                                if (Settings.dumpInventories) {
-                                    Scraper.m_inventorySQL.add(
-                                        "INSERT INTO `rscMessages`.`INVENTORIES` (`replayIndex`, `timestamp`, `slot`, `equipped`, `itemID`, `amount`, `opcode`) VALUES " +
-                                            String.format("('%s', '%d', '%d', '%d', '%d', '%d', '%d');\n",
-                                                keyCRC,
-                                                packet.timestamp,
-                                                slot,
-                                                equipped,
-                                                itemID,
-                                                itemStack,
-                                                packet.opcode)
-                                    );
-                                }
 
-                                inventoryItemsAllCount[itemID] += itemStack;
 
                                 inventoryItems[slot] = itemID;
                                 inventoryStackAmounts[slot] = itemStack;
                                 inventoryItemEquipped[slot] = equipped;
-                            }
-                        }
-                        break;
-                    case PacketBuilder.OPCODE_SET_INVENTORY_SLOT: // 90
-                        if (packet.data == null) {
-                            break;
-                        }
 
-                        if (Settings.dumpInventories || Settings.dumpNPCDamage) {
-                            int slot = packet.readUnsignedByte();
-                            int itemIDAndEquipped = packet.readUnsignedShort();
-                            int equipped = ((itemIDAndEquipped >> 15) & 0x1);
-                            int itemID = itemIDAndEquipped & 0x7FFF;
-                            long itemStack = 1;
-                            if (JGameData.itemStackable[itemID]) {
-                                itemStack = packet.readUnsignedInt3();
-                            }
+                                if (Settings.dumpInventories) {
+                                    thisReplaySqlStatements.add(
+                                        ScraperDatabase.newSQLStatement(
+                                            Scraper.m_inventorySQL,
+                                            ScraperDatabase.getInsertStatement(
+                                                inventoriesTable,
+                                                new Object[] {
+                                                    keyCRC,
+                                                    packet.timestamp,
+                                                    slot,
+                                                    equipped,
+                                                    itemID,
+                                                    itemStack,
+                                                    packet.opcode
+                                                }
+                                            )
+                                        )
+                                    );
+                                }
 
-                            if (Settings.dumpInventories) {
-                                Scraper.m_inventorySQL.add(
-                                    "INSERT INTO `rscMessages`.`INVENTORIES` (`replayIndex`, `timestamp`, `slot`, `equipped`, `itemID`, `amount`, `opcode`) VALUES " +
-                                        String.format("('%s', '%d', '%d', '%d', '%d', '%d', '%d');\n",
-                                            keyCRC,
-                                            packet.timestamp,
-                                            slot,
-                                            equipped,
-                                            itemID,
-                                            itemStack,
-                                            packet.opcode)
-                                );
-                            }
-
-                            inventoryItems[slot] = itemID;
-                            inventoryStackAmounts[slot] = itemStack;
-                            inventoryItemEquipped[slot] = equipped;
-
-                            if (Settings.dumpNPCDamage) {
-                                if (isAmmo(itemID)) {
-                                    lastAmmo = itemID;
-                                    lastAmmoTimestamp = packet.timestamp;
+                                if (Settings.dumpNPCDamage) {
+                                    if (isAmmo(itemID)) {
+                                        lastAmmo = itemID;
+                                        lastAmmoTimestamp = packet.timestamp;
+                                    }
                                 }
                             }
-                        }
-                        break;
+                            break;
 
-                    case PacketBuilder.OPCODE_REMOVE_INVENTORY_SLOT: // 123
-                        int slotRemoved = packet.readUnsignedByte();
-                        int itemID = inventoryItems[slotRemoved];
+                        case PacketBuilder.OPCODE_REMOVE_INVENTORY_SLOT: // 123
+                            if (Settings.dumpInventories || Settings.dumpNPCDamage || Settings.dumpRNGEvents) {
+                                int slotRemoved = packet.readUnsignedByte();
+                                int itemID = inventoryItems[slotRemoved];
 
-                        inventoryItemsAllCount[itemID] -= inventoryStackAmounts[slotRemoved];
-                        for (int slot = slotRemoved; slot < 28; slot++) {
-                            inventoryItems[slot] = inventoryItems[slot + 1];
-                            inventoryStackAmounts[slot] = inventoryStackAmounts[slot + 1];
-                            inventoryItemEquipped[slot] = inventoryItemEquipped[slot + 1];
-                        }
+                                inventoryItemsAllCount[itemID] -= inventoryStackAmounts[slotRemoved];
+                                for (int slot = slotRemoved; slot < 28; slot++) { // 30-1-1 for indexing & advancing
+                                    inventoryItems[slot] = inventoryItems[slot + 1];
+                                    inventoryStackAmounts[slot] = inventoryStackAmounts[slot + 1];
+                                    inventoryItemEquipped[slot] = inventoryItemEquipped[slot + 1];
+                                }
 
-                        if (Settings.dumpNPCDamage) {
-                            if (isAmmo(itemID)) {
-                                lastAmmo = itemID;
-                                lastAmmoTimestamp = packet.timestamp;
+                                if (Settings.dumpNPCDamage) {
+                                    if (isAmmo(itemID)) {
+                                        lastAmmo = itemID;
+                                        lastAmmoTimestamp = packet.timestamp;
+                                    }
+                                }
                             }
-                        }
 
-                        break;
+                            break;
 
-                    case PacketBuilder.OPCODE_SET_STATS: // 156
-                        for (int stat = 0; stat < 17; stat++) {
+                        case PacketBuilder.OPCODE_SET_STATS: // 156
+                            for (int stat = 0; stat < 17; stat++) {
+                                playerCurStat[stat] = packet.readByte();
+                            }
+                            for (int stat = 0; stat < 17; stat++) {
+                                playerBaseStat[stat] = packet.readByte();
+                            }
+                            for (int stat = 0; stat < 17; stat++) {
+                                playerXP[stat] = packet.readUnsignedInt();
+                            }
+                            packet.skip(1); // quest points
+                            break;
+
+                        case PacketBuilder.OPCODE_UPDATE_STAT: // 159
+                            int stat = packet.readByte();
                             playerCurStat[stat] = packet.readByte();
-                        }
-                        for (int stat = 0; stat < 17; stat++) {
                             playerBaseStat[stat] = packet.readByte();
-                        }
-                        for (int stat = 0; stat < 17; stat++) {
                             playerXP[stat] = packet.readUnsignedInt();
-                        }
-                        packet.skip(1); // quest points
-                        break;
+                            break;
 
-                    case PacketBuilder.OPCODE_UPDATE_STAT: // 159
-                        int stat = packet.readByte();
-                        playerCurStat[stat] = packet.readByte();
-                        playerBaseStat[stat] = packet.readByte();
-                        playerXP[stat] = packet.readUnsignedInt();
-                        break;
-
-                    case PacketBuilder.OPCODE_PLAY_SOUND: // 204
-                        lastSound = packet.readPaddedString();
-                        lastSoundTimestamp = packet.timestamp;
-                        break;
+                        case PacketBuilder.OPCODE_PLAY_SOUND: // 204
+                            lastSound = packet.readPaddedString();
+                            lastSoundTimestamp = packet.timestamp;
+                            break;
 
 
-                    default:
-                        break;
+                        default:
+                            break;
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    Logger.Error(String.format("@|red Scraper.processReplays incomingPackets loop during replay %s on opcode %d at timestamp %d|@", fname, packet.opcode, packet.timestamp));
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
-                Logger.Error(String.format("@|red Scraper.processReplays incomingPackets loop during replay %s on opcode %d at timestamp %d|@", fname, packet.opcode, packet.timestamp));
+            } else {
+                // Process outgoing packets
+                Logger.Debug("@|white [" + keyCRC + "]|@ " + String.format("outgoing opcode: %d",packet.opcode));
+                try {
+                    switch (packet.opcode) {
+                        case ReplayEditor.VIRTUAL_OPCODE_CONNECT: // Login
+                            Logger.Info("@|white [" + keyCRC + "]|@ outgoing login (timestamp: " + packet.timestamp + ")");
+                            break;
+
+                        case 216: // Send chat message
+                            if (Settings.dumpChat) {
+                                String sendChatMessage = packet.readRSCString();
+                                thisReplaySqlStatements.add(
+                                    ScraperDatabase.newSQLStatement(
+                                        Scraper.m_chatSQL,
+                                        ScraperDatabase.getInsertStatement(
+                                            sendChatTable,
+                                            new Object[] {
+                                                keyCRC,
+                                                packet.timestamp,
+                                                localPID,
+                                                op216Count++,
+                                                sendChatMessage
+                                            }
+                                        )
+                                    )
+                                );
+                            }
+                            if (Settings.sanitizePublicChat)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            break;
+
+                        case 218: // Send private message
+                            if (Settings.dumpChat) {
+                                packet.readPaddedString(); // recipient
+                                String sendPMMessage = packet.readRSCString();
+                                thisReplaySqlStatements.add(
+                                    ScraperDatabase.newSQLStatement(
+                                        Scraper.m_chatSQL,
+                                        ScraperDatabase.getInsertStatement(
+                                            sendPMTable,
+                                            new Object[] {
+                                                keyCRC,
+                                                packet.timestamp,
+                                                sendPMCount++,
+                                                sendPMMessage
+                                            }
+                                        )
+                                    )
+                                );
+                            }
+                            if (Settings.sanitizePrivateChat)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            break;
+
+                        case 167: // Remove friend
+                        case 195: // Add friend
+                        case 241: // Remove ignore
+                        case 132: // Add ignore
+                            if (Settings.sanitizeFriendsIgnore)
+                                packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
+                            break;
+
+                        case 116: // Choose dialogue option
+                            if (Settings.dumpMessages) {
+                                thisReplaySqlStatements.add(
+                                    ScraperDatabase.newSQLStatement(
+                                        Scraper.m_messageSQL,
+                                        ScraperDatabase.getInsertStatement(
+                                            chooseDialogueOptionTable,
+                                            new Object[] {
+                                                keyCRC,
+                                                packet.timestamp,
+                                                packet.readUnsignedByte() + 1
+                                            }
+                                        )
+                                    )
+                                );
+                            }
+                            break;
+                        case 45: // Send Sleepword Guess
+                            if (Settings.dumpSleepWords) {
+                                interestingSleepPackets.add(packet);
+                            }
+                            break;
+
+                        case 235: // Send appearance
+                            if (Settings.dumpAppearances) {
+                                System.out.print("Appearance Packet in " + fname + ": ");
+                                try {
+                                    for (int i = 0; i < 8; i++) {
+                                        System.out.print(String.format("%d ", packet.readUnsignedByte()));
+                                    }
+                                } catch (ArrayIndexOutOfBoundsException e) {
+                                    System.out.print(" XXXXX");
+                                }
+                                System.out.println();
+                            }
+                            break;
+                        case 115: // Use item with Scenery
+                            if (Settings.dumpRNGEvents || Settings.dumpInteractions) {
+                                useItemWithSceneryX = packet.readUnsignedShort();
+                                useItemWithSceneryY = packet.readUnsignedShort();
+                                lastSceneryInteractX = useItemWithSceneryX;
+                                lastSceneryInteractY = useItemWithSceneryY;
+                                lastInteractOpcode = packet.opcode;
+                                useItemWithSceneryItemID = inventoryItems[packet.readUnsignedShort()];
+                            }
+                            break;
+                        case 79: // Interact with scenery option 2
+                            if (Settings.dumpRNGEvents || Settings.dumpInteractions) {
+                                interactWithSceneryOption2X = packet.readUnsignedShort();
+                                interactWithSceneryOption2Y = packet.readUnsignedShort();
+                                lastSceneryInteractX = interactWithSceneryOption2X;
+                                lastSceneryInteractY = interactWithSceneryOption2Y;
+                                lastInteractOpcode = packet.opcode;
+                            }
+                            break;
+                        case 136: // interact with scenery option 1
+                            if (Settings.dumpRNGEvents || Settings.dumpInteractions) {
+                                interactWithSceneryOption1X = packet.readUnsignedShort();
+                                interactWithSceneryOption1Y = packet.readUnsignedShort();
+                                lastSceneryInteractX = interactWithSceneryOption1X;
+                                lastSceneryInteractY = interactWithSceneryOption1Y;
+                                lastInteractOpcode = packet.opcode;
+                            }
+                            if (Settings.dumpInteractions) {
+                                
+                            }
+                            break;
+
+                        default:
+                            break;
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    Logger.Error(String.format("@|red Scraper.processReplays outgoingPackets loop during replay %s on opcode %d at timestamp %d|@", fname, packet.opcode, packet.timestamp));
+                }
             }
         }
 
@@ -1480,117 +1800,23 @@ public class ScraperProcessor implements Runnable {
             }
         }
 
-        int op216Count = 0;
-        int sendPMCount = 0;
-
-        // Process outgoing packets
-        LinkedList<ReplayPacket> outgoingPackets = editor.getOutgoingPackets();
-        for (ReplayPacket packet : outgoingPackets) {
-            Logger.Debug("@|white [" + keyCRC + "]|@ " + String.format("outgoing opcode: %d",packet.opcode));
-            try {
-                switch (packet.opcode) {
-                    case ReplayEditor.VIRTUAL_OPCODE_CONNECT: // Login
-                        Logger.Info("@|white [" + keyCRC + "]|@ outgoing login (timestamp: " + packet.timestamp + ")");
-                        break;
-
-                    case 216: // Send chat message
-                        if (Settings.dumpChat) {
-                            String sendChatMessage = packet.readRSCString();
-                            Scraper.m_chatSQL.add(
-                                "INSERT INTO `rscMessages`.`SEND_CHAT` (`replayIndex`, `timestamp`, `pid`, `sendCount`, `message`) VALUES " +
-                                    String.format("('%d', '%d', '%d', '%d', '%s');\n",
-                                        editor.getKeyCRC(),
-                                        packet.timestamp,
-                                        localPID,
-                                        op216Count++,
-                                        sendChatMessage.replaceAll("'", "''")
-                                    )
-                            );
-                        }
-                        if (Settings.sanitizePublicChat)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        break;
-
-                    case 218: // Send private message
-                        if (Settings.dumpChat) {
-                            packet.readPaddedString(); // recipient
-                            String sendPMMessage = packet.readRSCString();
-                            Scraper.m_chatSQL.add(
-                                "INSERT INTO `rscMessages`.`SEND_PM` (`replayIndex`, `timestamp`, `messageCount`, `message`) VALUES " +
-                                    String.format("('%d', '%d', '%d', '%s');\n",
-                                        keyCRC,
-                                        packet.timestamp,
-                                        sendPMCount++,
-                                        sendPMMessage.replaceAll("'", "''")
-                                    )
-                            );
-                        }
-                        if (Settings.sanitizePrivateChat)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        break;
-
-                    case 167: // Remove friend
-                    case 195: // Add friend
-                    case 241: // Remove ignore
-                    case 132: // Add ignore
-                        if (Settings.sanitizeFriendsIgnore)
-                            packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
-                        break;
-
-                    case 116: // Choose dialogue option
-                        if (Settings.dumpMessages) {
-                            Scraper.m_messageSQL.add(
-                                String.format("INSERT INTO `rscMessages`.`CLIENT_CHOOSE_DIALOGUE_OPTION` (`replayIndex`, `timestamp`, `choice`) VALUES ('%d', '%d', '%d');\n",
-                                    keyCRC,
-                                    packet.timestamp,
-                                    packet.readUnsignedByte() + 1
-                                )
-                            );
-                        }
-                        break;
-                    case 45: // Send Sleepword Guess
-                        if (Settings.dumpSleepWords) {
-                            interestingSleepPackets.put(interestingSleepPackets.size(), packet);
-                        }
-                        break;
-
-                    case 235: // Send appearance
-                        if (Settings.dumpAppearances) {
-                            System.out.print("Appearance Packet in " + fname + ": ");
-                            try {
-                                for (int i = 0; i < 8; i++) {
-                                    System.out.print(String.format("%d ", packet.readUnsignedByte()));
-                                }
-                            } catch (ArrayIndexOutOfBoundsException e) {
-                                System.out.print(" XXXXX");
-                            }
-                            System.out.println();
-                        }
-                        break;
-                    default:
-                        break;
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-                Logger.Error(String.format("@|red Scraper.processReplays outgoingPackets loop during replay %s on opcode %d at timestamp %d|@", fname, packet.opcode, packet.timestamp));
-            }
-        }
 
         // go through both incoming & outgoing packets in chronological order, for ease of logic
+        // TODO: could work this back into the main scraper now that it's been refactored
+        // to go through both incoming & outgoing in chronological order too,
+        // but also it still works and I'm reasonably sure we will never need to dump sleepwords again anyway.
         if (Settings.dumpSleepWords) {
-
             int numberOfPackets = interestingSleepPackets.size();
             ReplayPacket[] sleepPackets = new ReplayPacket[numberOfPackets];
 
             // Populate sleepPackets with sorted packets
-            List<ReplayPacket> sortedSleepPackets = new ArrayList<ReplayPacket>(interestingSleepPackets.values());
             try {
-                Collections.sort(sortedSleepPackets, new ReplayPacketComparator());
+                Collections.sort(interestingSleepPackets, new ReplayPacketComparator());
             } catch (Exception e) {
                 e.printStackTrace();
             }
             int arrIndex = -1;
-            for (Iterator<ReplayPacket> iterator = sortedSleepPackets.iterator(); iterator.hasNext();) {
+            for (Iterator<ReplayPacket> iterator = interestingSleepPackets.iterator(); iterator.hasNext();) {
                 sleepPackets[++arrIndex] = iterator.next();
             }
 
@@ -1730,7 +1956,23 @@ public class ScraperProcessor implements Runnable {
             FileUtil.mkdir(new File(outDir).getParent());
             editor.exportPCAP(outDir);
         }
-        Scraper.replaysProcessedCount += 1;
-        Logger.Info("@|cyan,intensity_bold Finished sanitizing |@@|white [" + keyCRC + "]|@ aka " + fname );
+
+        if (Scraper.validSQLCredentials) {
+            int sqlStatementCount = thisReplaySqlStatements.size();
+            int connectionNum = (int) Thread.currentThread().getId() % Settings.threads;
+            Logger.Info("@|cyan Inserting " + sqlStatementCount + " statements on thread " + connectionNum + " for replay |@@|white [" + keyCRC + "]|@ aka " + fname);
+            try {
+                ScraperDatabase.batchInsert(thisReplaySqlStatements, connectionNum);
+            } catch (Exception e) {
+                e.printStackTrace();
+                Logger.Error("@|red Discarded up to " + sqlStatementCount + " SQL statements!! :-( ... " + fname + "|@");
+            }
+            Logger.Info("@|cyan,intensity_bold Finished sanitizing |@@|white [" + keyCRC + "]|@ aka " + fname + " @|cyan Inserted " + sqlStatementCount + " statements on thread " + connectionNum + "|@");
+        } else {
+            Logger.Info("@|cyan,intensity_bold Finished sanitizing |@@|white [" + keyCRC + "]|@ aka " + fname );
+        }
+
+        Scraper.replaysProcessedCount += 1; // TODO: this isn't threadsafe
+
     }
 }

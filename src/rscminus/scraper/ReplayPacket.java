@@ -30,6 +30,7 @@ public class ReplayPacket {
     public int timestamp;
     public int opcode;
     public byte[] data;
+    public boolean incoming;
 
     private static Class11 stringDecrypter = new Class11(new byte[]{(byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 21, (byte) 22, (byte) 22, (byte) 20, (byte) 22, (byte) 22, (byte) 22, (byte) 21, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 3, (byte) 8, (byte) 22, (byte) 16, (byte) 22, (byte) 16, (byte) 17, (byte) 7, (byte) 13, (byte) 13, (byte) 13, (byte) 16, (byte) 7, (byte) 10, (byte) 6, (byte) 16, (byte) 10, (byte) 11, (byte) 12, (byte) 12, (byte) 12, (byte) 12, (byte) 13, (byte) 13, (byte) 14, (byte) 14, (byte) 11, (byte) 14, (byte) 19, (byte) 15, (byte) 17, (byte) 8, (byte) 11, (byte) 9, (byte) 10, (byte) 10, (byte) 10, (byte) 10, (byte) 11, (byte) 10, (byte) 9, (byte) 7, (byte) 12, (byte) 11, (byte) 10, (byte) 10, (byte) 9, (byte) 10, (byte) 10, (byte) 12, (byte) 10, (byte) 9, (byte) 8, (byte) 12, (byte) 12, (byte) 9, (byte) 14, (byte) 8, (byte) 12, (byte) 17, (byte) 16, (byte) 17, (byte) 22, (byte) 13, (byte) 21, (byte) 4, (byte) 7, (byte) 6, (byte) 5, (byte) 3, (byte) 6, (byte) 6, (byte) 5, (byte) 4, (byte) 10, (byte) 7, (byte) 5, (byte) 6, (byte) 4, (byte) 4, (byte) 6, (byte) 10, (byte) 5, (byte) 4, (byte) 4, (byte) 5, (byte) 7, (byte) 6, (byte) 10, (byte) 6, (byte) 10, (byte) 22, (byte) 19, (byte) 22, (byte) 14, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 22, (byte) 21, (byte) 22, (byte) 21, (byte) 22, (byte) 22, (byte) 22, (byte) 21, (byte) 22, (byte) 22});
     private int m_position;
@@ -172,16 +173,12 @@ class ReplayPacketComparator implements Comparator<ReplayPacket> {
 
     @Override
     public int compare(ReplayPacket a, ReplayPacket b) {
-        // this is reverse alphabetical order b/c we display them/in reverse order (y-=12 ea item)
         int offset = a.timestamp - b.timestamp;
 
         if (offset > 0) { // item a happened before item b
             offset = 10;
         } else if (offset < 0) { // item b happened before item a
             offset = -10;
-            // items have the same name we would like to group items that are on the same tile as well,
-            // not just having
-            // the same name, so that we can use "last_item" in a useful way
         } else {
             int opcodeOffset = a.opcode - b.opcode;
             if (opcodeOffset > 0) {
@@ -189,8 +186,33 @@ class ReplayPacketComparator implements Comparator<ReplayPacket> {
             } else if (opcodeOffset < 0) {
                 offset = 5;
             } else {
-                offset = 0; // Could check data here to see if they are truly equal, but don't care right now
-                Logger.Info("Packet had same opcode and timestamp as another packet!");
+                if (a.incoming == b.incoming) {
+                    if (a.data.length > b.data.length) {
+                        offset = 2;
+                    } else if (b.data.length > a.data.length) {
+                        offset = -2;
+                    } else {
+                        for (int i = 0; i < a.data.length; i++) {
+                            if (a.data[i] != b.data[i]) {
+                                if (a.data[i] > b.data[i]) {
+                                    offset = 1;
+                                } else {
+                                    offset = -1;
+                                }
+                                break;
+                            }
+                        }
+                        // Packets are truly equal if offset is still equal to zero after all the above.
+                        // timestamp, opcode, incoming/outgoing, and data are all the same.
+                    }
+
+                } else {
+                    if (a.incoming) {
+                        offset = 3;
+                    } else {
+                        offset = -3;
+                    }
+                }
             }
         }
         return offset;

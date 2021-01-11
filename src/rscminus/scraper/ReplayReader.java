@@ -19,10 +19,7 @@
 
 package rscminus.scraper;
 
-import rscminus.common.FileUtil;
-import rscminus.common.ISAACCipher;
-import rscminus.common.MathUtil;
-import rscminus.common.Sleep;
+import rscminus.common.*;
 import rscminus.game.PacketBuilder;
 
 import java.io.*;
@@ -255,10 +252,10 @@ public class ReplayReader {
         boolean success = true;
         int originalPosition = m_position;
         ReplayPacket packet;
-        packet = readPacket(true);
+        packet = readPacket(true, true);
         if (packet == null || packet.opcode != PacketBuilder.OPCODE_PRIVACY_SETTINGS)
             success = false;
-        packet = readPacket(true);
+        packet = readPacket(true, true);
         if (packet == null || (packet.opcode != PacketBuilder.OPCODE_SEND_MESSAGE && packet.opcode != PacketBuilder.OPCODE_SET_APPEARANCE))
             success = false;
         m_position = originalPosition;
@@ -267,7 +264,7 @@ public class ReplayReader {
         return success;
     }
 
-    public ReplayPacket readPacket(boolean peek) {
+    public ReplayPacket readPacket(boolean peek, boolean incoming) {
         if (isEOF() || m_forceQuit)
             return null;
 
@@ -304,6 +301,7 @@ public class ReplayReader {
 
         try {
             ReplayPacket replayPacket = new ReplayPacket();
+            replayPacket.incoming = incoming;
             if (!m_loggedIn) {
                 if (m_outgoing) {
                     int length = readPacketLength();
@@ -398,9 +396,9 @@ public class ReplayReader {
                     replayPacket.opcode = (replayPacket.opcode - isaac.getNextValue()) & 0xFF;
                     replayPacket.timestamp = packetTimestamp;
                 } catch (Exception e) {
-                    System.out.println("WARNING: Invalid packet found, trimming replay");
+                    Logger.Error("WARNING: Invalid packet found, trimming replay");
                     try {
-                        System.out.println(String.format("Invalid length on opcode: %d", replayPacket.opcode));
+                        Logger.Error(String.format("Invalid length on opcode: %d", replayPacket.opcode));
                     } catch (Exception e2) {
                     }
                     return null;

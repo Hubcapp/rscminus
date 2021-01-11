@@ -266,11 +266,11 @@ public class Player extends Entity {
         if (levelsGained > 0) {
             playSound("advance");
             PacketBuilder.sendMessage(Game.CHAT_NONE,
-                String.format("You just advanced %d %s level!", levelsGained, Game.STAT_NAMES[skill]), // this message authentically is not plural if levelsGained > 1
+                String.format("You just advanced %d %s level!", levelsGained, Game.LEVEL_UP_STAT_NAMES[skill]), // this message authentically is not plural if levelsGained > 1
                 null, null, "@gre@", stream, isaacCipher);
             m_saveInfo.statCurrent[skill] += levelsGained;
             m_saveInfo.statMax[skill] += levelsGained;
-            Logger.Info(String.format("@|green %s just reached level %d %s!|@", getUsername(), m_saveInfo.statMax[skill], Game.STAT_NAMES[skill]));
+            Logger.Info(String.format("@|green %s just reached level %d %s!|@", getUsername(), m_saveInfo.statMax[skill], Game.LEVEL_UP_STAT_NAMES[skill]));
             updateStat(skill, m_saveInfo.statCurrent[skill], m_saveInfo.statMax[skill], m_saveInfo.statXP[skill], stream, isaacCipher);
         }
     }
