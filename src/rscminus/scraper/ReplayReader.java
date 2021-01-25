@@ -20,6 +20,7 @@
 package rscminus.scraper;
 
 import rscminus.common.*;
+import rscminus.game.ClientOpcodes;
 import rscminus.game.PacketBuilder;
 
 import java.io.*;
@@ -52,6 +53,10 @@ public class ReplayReader {
     private int m_keyIndex;
     private ISAACCipher isaac = new ISAACCipher();
 
+    private String fname = "unknown";
+
+    private boolean encounteredError = false;
+
     public static final int TIMESTAMP_EOF = -1;
 
     public byte[] getData() {
@@ -67,6 +72,7 @@ public class ReplayReader {
     }
 
     public boolean open(File f, ReplayVersion replayVersion, ReplayMetadata replayMetadata, LinkedList<ReplayKeyPair> keys, byte[] fileMetadata, byte[] metadata, byte[] checksum, boolean outgoing) throws IOException, NoSuchAlgorithmException {
+        fname = f.getPath();
         m_compressed = f.getName().endsWith(".gz");
 
         int size = calculateSize(f);
@@ -318,7 +324,7 @@ public class ReplayReader {
                             read(replayPacket.data, 0, dataLength);
                         }
                     } else {
-                        replayPacket.data = null;
+                        replayPacket.data = new byte[0];
                         replayPacket.opcode = readUnsignedByte();
                     }
                     replayPacket.timestamp = packetTimestamp;
@@ -389,24 +395,49 @@ public class ReplayReader {
                             read(replayPacket.data, 0, dataLength);
                         }
                     } else {
-                        replayPacket.data = null;
+                        replayPacket.data = new byte[0];
                         replayPacket.opcode = readUnsignedByte();
                     }
-
-                    replayPacket.opcode = (replayPacket.opcode - isaac.getNextValue()) & 0xFF;
+                    int encOpcode = replayPacket.opcode;
+                    replayPacket.opcode = (encOpcode - isaac.getNextValue()) & 0xFF;
                     replayPacket.timestamp = packetTimestamp;
+
+                    if (encounteredError) {
+                        // Won't be able to tell what opcodes are after this, but it's useful to know some opcode occurred at some timestamp.
+                        replayPacket.opcode = ReplayEditor.VIRTUAL_OPCODE_ERROR;
+                    } else if (!incoming) {
+                        // A few botted replays have problems with out.bin.
+                        // No amount of shifting isaac value seems to help in decoding the opcode value, it basically has no isaac key.
+                        // Mark packets from this point on as not being able to have their opcode read.
+                        if (!ClientOpcodes.isPossiblyValid(replayPacket.opcode, replayPacket.data.length, 235)) {
+                            Logger.Warn("Unknown client opcode " + replayPacket.opcode + " of length " + replayPacket.data.length + " in replay [" + fname + "] at timestamp " + replayPacket.timestamp + ".");
+                            encounteredError = true;
+                            replayPacket.opcode = ReplayEditor.VIRTUAL_OPCODE_ERROR;
+                        }
+                    }
                 } catch (Exception e) {
-                    Logger.Error("WARNING: Invalid packet found, trimming replay");
+                    if (incoming) {
+                        try {
+                            if (replayPacket.opcode == 0 && replayPacket.timestamp == 0) {
+                                return null;
+                            }
+                        } catch (Exception e2) {
+                            return null;
+                        }
+                    }
+                    Logger.Error("WARNING: Invalid " + (incoming ? "incoming" : "outgoing") + " packet found, setting all subsequent packets as error opcode [" + fname + "]");
                     try {
-                        Logger.Error(String.format("Invalid length on opcode: %d", replayPacket.opcode));
+                        Logger.Error(String.format("Invalid length on opcode: %d, timestamp: %d", replayPacket.opcode, replayPacket.timestamp));
                     } catch (Exception e2) {
                     }
-                    return null;
+                    encounteredError = true;
+                    replayPacket.opcode = ReplayEditor.VIRTUAL_OPCODE_ERROR;
                 }
             }
             return replayPacket;
         } catch (Exception e) {
             e.printStackTrace();
+            encounteredError = true;
             return null;
         }
     }

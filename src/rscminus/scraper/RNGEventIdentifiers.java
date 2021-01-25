@@ -86,6 +86,34 @@ public class RNGEventIdentifiers {
         return 4; // unknown
     }
 
+    private int fallbackToStringParseFoodID(String message) {
+        // this function is necessary if out.bin is corrupt.
+
+        if (message.contains("lobster")) {
+            return 372;
+        }
+        if (message.contains("salmon")) {
+            return 356;
+        }
+        if (message.contains("trout")) {
+            return 358;
+        }
+        if (message.contains("tuna")) {
+            return 366;
+        }
+        if (message.contains("shrimp")) {
+            return 349;
+        }
+        if (message.contains("meat")) {
+            if (lastStove != 4) {
+                return 133;
+            } else {
+                return 1280;
+            }
+        }
+        return -1;
+    }
+
     Object[] identifyFood(int cookingStage, String message, int keyCRC, int timestamp, int cookingLevel, int foodItemID, int sceneryX, int sceneryY) {
         if (cookingStage == NOMATCH) {
             return new Object[] { false, "" };
@@ -98,6 +126,10 @@ public class RNGEventIdentifiers {
             case SUCCESS:
             case FAILURE:
             case INVALID:
+                if (lastFoodID == -1) {
+                    lastFoodID = fallbackToStringParseFoodID(message);
+                }
+
                 Object[] result = new Object[] { true, addCookingSQL(keyCRC, timestamp, message, cookingStage, stoves[lastStove], lastFoodID, cookingLevel) };
                 lastFoodID = -1;
                 lastStove = 4;

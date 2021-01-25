@@ -45,6 +45,8 @@ public class Scraper {
     static List<String> m_chatSQL = Collections.synchronizedList(new ArrayList<String>());
     static List<String> m_messageSQL = Collections.synchronizedList(new ArrayList<String>());
     static List<String> m_inventorySQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_shopsSQL = Collections.synchronizedList(new ArrayList<String>());
+    static List<String> m_shopEventsSQL = Collections.synchronizedList(new ArrayList<String>());
     static List<String> m_damageSQL = Collections.synchronizedList(new ArrayList<String>());
 
     // RNG SQLs
@@ -219,6 +221,9 @@ public class Scraper {
                 case "-t":
                     Settings.threads = Integer.parseInt(arg.toLowerCase().substring(2));
                     break;
+                case "-u":
+                    Settings.dumpShops = true;
+                    break;
                 case "-v":
                     try {
                         int version = Integer.parseInt(arg.substring(2));
@@ -375,6 +380,10 @@ public class Scraper {
                 dumpSQLToFile(m_woodcutSQL, "woodcut event", Settings.scraperOutputPath + "woodcut.sql");
                 dumpSQLToFile(m_fishingSQL, "fishing event", Settings.scraperOutputPath + "fishing.sql");
             }
+            if (Settings.dumpShops) {
+                dumpSQLToFile(m_shopsSQL, "shop packet", Settings.scraperOutputPath + "shopPackets.sql");
+                dumpSQLToFile(m_shopEventsSQL, "shop events", Settings.scraperOutputPath + "shopEvents.sql");
+            }
         }
 
         Logger.Info(String.format("@|green %d out of %d replays were able to have an IP address determined.|@", ipFoundCount, replaysProcessedCount));
@@ -390,7 +399,8 @@ public class Scraper {
     static boolean checkInsertedCorrectly() {
         int statementsInserted = ScraperDatabaseStructure.getRowcountFromAllTables();
         int statementsCreated = m_npcLocsSQL.size() + m_replayDictionarySQL.size() + m_chatSQL.size() + m_messageSQL.size()
-            + m_inventorySQL.size() + m_damageSQL.size() + m_cookingSQL.size() + m_woodcutSQL.size() + m_fishingSQL.size();
+            + m_inventorySQL.size() + m_damageSQL.size() + m_cookingSQL.size() + m_woodcutSQL.size() + m_fishingSQL.size()
+            + m_shopsSQL.size() + m_shopEventsSQL.size();
 
         if (statementsCreated == statementsInserted) {
             Logger.Info("@|green,intensity_bold Inserted " + statementsInserted + " statement(s) into database " + ScraperDatabase.sqlDatabaseName + "|@");

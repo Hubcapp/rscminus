@@ -111,6 +111,42 @@ public class WorldManager {
         }
     }
 
+    public int coordinateIsAdjacentScenery(int x, int y, int[] sceneryIDs) {
+        int guess = getSceneryId(x + 1, y);
+        if (guess != 60000) {
+            for (int sceneryId : sceneryIDs) {
+                if (guess == sceneryId)
+                    return sceneryId;
+            }
+        }
+
+        guess = getSceneryId(x, y + 1);
+        if (guess != 60000) {
+            for (int sceneryId : sceneryIDs) {
+                if (guess == sceneryId)
+                    return sceneryId;
+            }
+        }
+
+        guess = getSceneryId(x - 1, y);
+        if (guess != 60000) {
+            for (int sceneryId : sceneryIDs) {
+                if (guess == sceneryId)
+                    return sceneryId;
+            }
+        }
+
+        guess = getSceneryId(x, y - 1);
+        if (guess != 60000) {
+            for (int sceneryId : sceneryIDs) {
+                if (guess == sceneryId)
+                    return sceneryId;
+            }
+        }
+
+        return 60000;
+    }
+
     public int getCollisionMask(int x, int y) {
         int floor = y / Game.WORLD_Y_OFFSET;
         int floorOffset = floor * Game.WORLD_Y_OFFSET;

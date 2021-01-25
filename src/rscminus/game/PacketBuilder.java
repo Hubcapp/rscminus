@@ -62,6 +62,7 @@ public class PacketBuilder {
     public static final int OPCODE_CREATE_PLAYERS = 191;
     public static final int OPCODE_PLAY_SOUND = 204;
     public static final int OPCODE_SET_PRAYERS = 206;
+    public static final int OPCODE_APPEARANCE_KEEPALIVE = 213;
     public static final int OPCODE_UPDATE_PLAYERS = 234;
     public static final int OPCODE_UPDATE_IGNORE = 237;
     public static final int OPCODE_GAME_SETTINGS = 240;

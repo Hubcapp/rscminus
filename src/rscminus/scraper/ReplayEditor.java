@@ -61,6 +61,7 @@ public class ReplayEditor {
 
     public static final int VIRTUAL_OPCODE_CONNECT = 10000;
     public static final int VIRTUAL_OPCODE_NOP = 10001;
+    public static final int VIRTUAL_OPCODE_ERROR = 11000;
 
     public byte[] getMetadata() {
         return m_metadata;
@@ -601,7 +602,7 @@ public class ReplayEditor {
                 m_replayMetadata.IPAddress4 += (217 << 24) + (163 << 16) + (53 << 8) + 177;
                 Scraper.ipFoundCount += 1;
             } else {
-                Logger.Warn("@|white [" + getKeyCRC() + "]|@ " + String.format("authentic replay: %b, Scraper.ip_address: %d", authenticReplay(), m_replayMetadata.IPAddress4));
+                Logger.Debug("@|white [" + getKeyCRC() + "]|@ " + String.format("authentic replay: %b, Scraper.ip_address: %d", authenticReplay(), m_replayMetadata.IPAddress4));
             }
         }
         Logger.Info("@|white [" + getKeyCRC() + "]|@ " + String.format("IP Address determined: %d.%d.%d.%d",

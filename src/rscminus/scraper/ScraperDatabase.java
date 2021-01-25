@@ -55,7 +55,7 @@ public class ScraperDatabase {
             return false;
         }
 
-        Logger.Info("Established Scraper Database connection, " + debugCredentialsString());
+        Logger.Info("Establishing Scraper Database connection, " + debugCredentialsString());
         createDatabaseIfNotExists();
         ScraperDatabaseStructure.createTablesIfNotExists();
         return true;
@@ -186,6 +186,41 @@ public class ScraperDatabase {
     static String newSQLStatement(List<String> sqlStatementList, String sqlStatement) {
         sqlStatementList.add(sqlStatement + "\n");
         return sqlStatement;
+    }
+
+    static int[] getShopBoundaries(String query, int thread) {
+        Statement statement = null;
+        Connection connection = null;
+        try {
+            DataSource ds = pooledDataSources[thread].getDataSource();
+            connection = ds.getConnection();
+            statement = connection.createStatement();
+            ResultSet rs =  statement.executeQuery(query);
+            int rowCount = 0;
+            int[] shopInfo = new int[7];
+            while (rs.next()) {
+                ++rowCount;
+                shopInfo[0] = rs.getInt("index");
+                shopInfo[1] = rs.getInt("ownerID");
+                shopInfo[2] = rs.getInt("assistantID");
+                shopInfo[3] = rs.getInt("northEastX");
+                shopInfo[4] = rs.getInt("northEastY");
+                shopInfo[5] = rs.getInt("southWestX");
+                shopInfo[6] = rs.getInt("southWestY");
+            }
+            if (rowCount == 1) {
+                return shopInfo;
+            } else {
+                Logger.Error("More than one row when not expected!");
+                return null;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            if (statement != null) try { statement.close(); } catch (SQLException ignore) {}
+            if (connection != null) try { connection.close(); } catch (SQLException ignore) {}
+        }
+        return null;
     }
 
     static int countRowsInTable(ScraperDatabaseTable table) {

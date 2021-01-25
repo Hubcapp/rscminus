@@ -173,6 +173,22 @@ class ReplayPacketComparator implements Comparator<ReplayPacket> {
 
     @Override
     public int compare(ReplayPacket a, ReplayPacket b) {
+        if (a == null && b != null) {
+            return 15;
+        } else if(b == null && a != null) {
+            return -15;
+        } else if (a == null && b == null) {
+            return 0;
+        }
+
+        if (a.data == null && b.data != null) {
+            return 15;
+        } else if(b.data == null && a.data != null) {
+            return -15;
+        } else if (a.data == null && b.data == null) {
+            return 0;
+        }
+
         int offset = a.timestamp - b.timestamp;
 
         if (offset > 0) { // item a happened before item b
@@ -181,36 +197,44 @@ class ReplayPacketComparator implements Comparator<ReplayPacket> {
             offset = -10;
         } else {
             int opcodeOffset = a.opcode - b.opcode;
-            if (opcodeOffset > 0) {
+
+            // Player coordinate MUST happen first, because so many opcodes send data as offsets of player coord
+            if (a.opcode == 191 && b.opcode != 191) {
                 offset = -5;
-            } else if (opcodeOffset < 0) {
+            } else if (b.opcode == 191 && a.opcode != 191) {
                 offset = 5;
             } else {
-                if (a.incoming == b.incoming) {
-                    if (a.data.length > b.data.length) {
-                        offset = 2;
-                    } else if (b.data.length > a.data.length) {
-                        offset = -2;
-                    } else {
-                        for (int i = 0; i < a.data.length; i++) {
-                            if (a.data[i] != b.data[i]) {
-                                if (a.data[i] > b.data[i]) {
-                                    offset = 1;
-                                } else {
-                                    offset = -1;
-                                }
-                                break;
-                            }
-                        }
-                        // Packets are truly equal if offset is still equal to zero after all the above.
-                        // timestamp, opcode, incoming/outgoing, and data are all the same.
-                    }
-
+                if (opcodeOffset > 0) {
+                    offset = 5;
+                } else if (opcodeOffset < 0) {
+                    offset = -5;
                 } else {
-                    if (a.incoming) {
-                        offset = 3;
+                    if (a.incoming == b.incoming) {
+                        if (a.data.length > b.data.length) {
+                            offset = -2;
+                        } else if (b.data.length > a.data.length) {
+                            offset = 2;
+                        } else {
+                            for (int i = 0; i < a.data.length; i++) {
+                                if (a.data[i] != b.data[i]) {
+                                    if (a.data[i] > b.data[i]) {
+                                        offset = 1;
+                                    } else {
+                                        offset = -1;
+                                    }
+                                    break;
+                                }
+                            }
+                            // Packets are truly equal if offset is still equal to zero after all the above.
+                            // timestamp, opcode, incoming/outgoing, and data are all the same.
+                        }
+
                     } else {
-                        offset = -3;
+                        if (a.incoming) {
+                            offset = 3;
+                        } else {
+                            offset = -3;
+                        }
                     }
                 }
             }

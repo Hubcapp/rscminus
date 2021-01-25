@@ -23,6 +23,7 @@ import rscminus.common.FileUtil;
 import rscminus.common.JGameData;
 import rscminus.common.Logger;
 import rscminus.common.Settings;
+import rscminus.game.ClientOpcodes;
 import rscminus.game.PacketBuilder;
 import rscminus.game.constants.Game;
 import rscminus.game.world.ViewRegion;
@@ -49,7 +50,6 @@ public class ScraperProcessor implements Runnable {
     private int npcCount = 0;
     private int npcCacheCount = 0;
     private int highestOption = 0;
-    private int highestStoreStock = 0;
 
     private int[] inventoryItems = new int[30];
     private long[] inventoryStackAmounts = new long[30];
@@ -440,6 +440,38 @@ public class ScraperProcessor implements Runnable {
         }
     }
 
+    private static int getShopId(int lastNPCTalkedTo, int playerX, int playerY, int timestamp, String fname) {
+        if (lastNPCTalkedTo != -1) {
+            String sql = "SELECT * FROM shops WHERE ownerID like " + lastNPCTalkedTo + " OR assistantID like " + lastNPCTalkedTo + ";";
+            int[] shopInfo = ScraperDatabase.getShopBoundaries(sql, (int) Thread.currentThread().getId() % Settings.threads);
+            int northEastX = shopInfo[3];
+            int southWestX = shopInfo[5];
+            int northEastY = shopInfo[4];
+            int southWestY = shopInfo[6];
+
+            if (playerX >= northEastX && playerX <= southWestX && playerY >= northEastY && playerY <= southWestY) {
+                return shopInfo[0];
+            } else {
+                Logger.Error("sanity check failed, player last talked to NPC outside their expected area! "
+                    + fname  + " ;; timestamp: " + timestamp + " ;; playerX: " + playerX
+                    + " ;; playerY: " + playerY + " ;; LAST NPC ID: " + lastNPCTalkedTo);
+            }
+        } else {
+            // out.bin is likely corrupt. Must fall back to coordinate based shop detection.
+            String sql = "SELECT * FROM shops WHERE northEastX <= " + playerX + " AND northEastY <= " + playerY +
+                " AND southWestX >= " + playerX + " AND southWestY >= " + playerY + ";";
+            int[] shopInfo = ScraperDatabase.getShopBoundaries(sql,
+                (int) Thread.currentThread().getId() % Settings.threads);
+            if (shopInfo != null) {
+                return shopInfo[0];
+            } else {
+                Logger.Error("Problem identifying shop using the fallback coordinates method; playerX: " +
+                    playerX + " playerY: " + playerY);
+            }
+        }
+        return -1;
+    }
+
     private static boolean isAmmo(int itemID) {
         switch (itemID) {
             case 11:
@@ -639,6 +671,10 @@ public class ScraperProcessor implements Runnable {
         RNGEventIdentifiers rng = new RNGEventIdentifiers();
         int op216Count = 0;
         int sendPMCount = 0;
+        int tickCounter = 0;
+
+        Shop[] shops = new Shop[86];
+
 
         LinkedList<ReplayPacket> packets = editor.getPackets();
 
@@ -652,10 +688,18 @@ public class ScraperProcessor implements Runnable {
         int lastSceneryInteractX = useItemWithSceneryX;
         int lastSceneryInteractY = useItemWithSceneryY;
         int lastInteractOpcode = -1;
+        int lastNPCTalkedTo = -1;
+        int lastBuyItem = -1;
+        int lastBuyTimestamp = -1;
+        int lastBuyAmount = -1;
+        int lastSellItem = -1;
+        int lastSellTimestamp = -1;
+        int lastSellAmount = -1;
+        boolean shopWasClosed = true;
 
         for (ReplayPacket packet : packets) {
             if (packet.incoming) {
-                Logger.Debug("@|white [" + keyCRC + "]|@ " + String.format("incoming opcode: %d",packet.opcode));
+                Logger.Debug("@|white [" + keyCRC + "]|@ " + String.format("incoming opcode: %d", packet.opcode));
                 try {
                     switch (packet.opcode) {
                         case ReplayEditor.VIRTUAL_OPCODE_CONNECT:
@@ -665,6 +709,7 @@ public class ScraperProcessor implements Runnable {
                             }
 
                             break;
+
                         case PacketBuilder.OPCODE_FLOOR_SET:
                             localPID = packet.readUnsignedShort();
                             planeX = packet.readUnsignedShort();
@@ -697,15 +742,28 @@ public class ScraperProcessor implements Runnable {
                                             thisReplaySqlStatements.add((String) foodResult[1]);
                                         }
                                     } catch (Exception e) {
-                                        Logger.Error("Error identifying food!");
+                                        Logger.Error("Error identifying food! [" + fname + "] @ " + packet.timestamp);
                                         e.printStackTrace();
                                     }
 
                                     try {
                                         // Dump success rate at cutting trees
-                                        if (Scraper.worldManager == null) {
-                                            Logger.Info("UwU");
+
+                                        int sceneryID = 60000;
+                                        if (lastSceneryInteractX == -1) {
+                                            // method assumes there is no spot in map where player is adjacent to
+                                            // two fishing spots at the same time. Seems true.
+                                            sceneryID = Scraper.worldManager.coordinateIsAdjacentScenery(playerX, playerY,
+                                                new int[] { 0, 1, 70, 306, 307, 308, 309, 1086, 1091, 1092, 1099, 1100 });
+
+                                        } else {
+                                            sceneryID = Scraper.worldManager.getSceneryId(lastSceneryInteractX, lastSceneryInteractY);
+                                            if (sceneryID == 60000) {
+                                                sceneryID = Scraper.worldManager.coordinateIsAdjacentScenery(playerX, playerY,
+                                                    new int[] { 0, 1, 70, 306, 307, 308, 309, 1086, 1091, 1092, 1099, 1100 });
+                                            }
                                         }
+
                                         Object[] woodResult =
                                         rng.identifyWood(rng.matchesWoodcut(sendMessage), sendMessage, keyCRC,
                                             packet.timestamp, playerCurStat[Game.STAT_WOODCUTTING],
@@ -716,23 +774,36 @@ public class ScraperProcessor implements Runnable {
                                             thisReplaySqlStatements.add((String) woodResult[1]);
                                         }
                                     } catch (Exception e) {
-                                        Logger.Error("Error identifying wood!");
+                                        Logger.Error("Error identifying wood! [" + fname + "] @ " + packet.timestamp);
                                         e.printStackTrace();
                                     }
 
                                     try {
                                         // Dump success rate at fishing
+                                        int sceneryID = 60000;
+                                        if (lastSceneryInteractX == -1) {
+                                            // method assumes there is no spot in map where player is adjacent to
+                                            // two fishing spots at the same time. Seems true.
+                                            sceneryID = Scraper.worldManager.coordinateIsAdjacentScenery(playerX, playerY,
+                                                new int[] { 192, 193, 194, 261, 271, 351, 352, 376 });
+
+                                        } else {
+                                            sceneryID = Scraper.worldManager.getSceneryId(lastSceneryInteractX, lastSceneryInteractY);
+                                            if (sceneryID == 60000) {
+                                                sceneryID = Scraper.worldManager.coordinateIsAdjacentScenery(playerX, playerY,
+                                                    new int[] { 192, 193, 194, 261, 271, 351, 352, 376 });
+                                            }
+                                        }
+
                                         Object[] fishResult =
                                         rng.identifyFish(rng.matchesFish(sendMessage, type), sendMessage, keyCRC,
-                                            packet.timestamp, playerCurStat[Game.STAT_FISHING],
-                                            Scraper.worldManager.getSceneryId(lastSceneryInteractX, lastSceneryInteractY),
-                                            lastInteractOpcode);
+                                            packet.timestamp, playerCurStat[Game.STAT_FISHING], sceneryID, lastInteractOpcode);
 
                                         if ((boolean) fishResult[0]) {
                                             thisReplaySqlStatements.add((String) fishResult[1]);
                                         }
                                     } catch (Exception e) {
-                                        Logger.Error("Error identifying fish!");
+                                        Logger.Error("Error identifying fish! [" + fname + "] @ " + packet.timestamp);
                                         e.printStackTrace();
                                     }
                                 }
@@ -773,9 +844,6 @@ public class ScraperProcessor implements Runnable {
                         case PacketBuilder.OPCODE_DIALOGUE_OPTIONS:
                             if (Settings.dumpMessages) {
                                 int numberOfOptions = packet.readUnsignedByte();
-                                if (numberOfOptions > highestOption) {
-                                    highestOption = numberOfOptions;
-                                }
 
                                 String[] choices = new String[] { "", "", "", "", "" };
                                 for (int i = 0; i < numberOfOptions; i++) {
@@ -801,7 +869,11 @@ public class ScraperProcessor implements Runnable {
                                 );
                             }
                             break;
-                        case PacketBuilder.OPCODE_CREATE_PLAYERS:
+                        case PacketBuilder.OPCODE_APPEARANCE_KEEPALIVE: // 213
+                            ++tickCounter;
+                            break;
+                        case PacketBuilder.OPCODE_CREATE_PLAYERS: // 191
+                            ++tickCounter;
                             packet.startBitmask();
                             playerX = packet.readBitmask(11);
                             playerY = packet.readBitmask(13);
@@ -1167,7 +1239,7 @@ public class ScraperProcessor implements Runnable {
                                         npcYCoordinate -= 32;
                                     }
 
-                                    int x = npcXCoordinate + playerX + planeFloor * floorYOffset;
+                                    int x = npcXCoordinate + playerX;
                                     int y = npcYCoordinate + playerY;
 
                                     if (Settings.dumpNpcLocs) {
@@ -1202,19 +1274,20 @@ public class ScraperProcessor implements Runnable {
                                 for (int i = 0; i < updateNpcCount; i++) {
                                     int npcServerIndex = packet.readUnsignedShort();
 
+                                    // There seems to be a bug in the server where it will (very rarely) send npc server index + 4096.
+                                    // This can be detected & corrected so that we can still scrape data,
+                                    // but we won't export the correction, to preserve the authentic behaviour of the server.
                                     if (npcServerIndex >= 5000) {
-                                        Logger.Warn("Received NPC server index out of bounds!! " + fname);
-                                        if (fname.contains("1e_Luis/Quests/Grand Tree/Grand Tree Pt2")) {
-                                            npcServerIndex -= 4096; // Luis got a bad bit, probably a network error.
-                                        }
+                                        Logger.Warn("Received NPC server index out of bounds...!! decrementing by 4096" + fname);
+                                        npcServerIndex -= 4096;
                                     } else if (npcsServer[npcServerIndex] == null && npcServerIndex >= 4096) {
                                         Logger.Warn("Received NPC server index not defined...!! decrementing by 4096 " + fname);
                                         npcServerIndex -= 4096;
                                         if (npcsServer[npcServerIndex] == null) {
+                                            // this seems to not actually happen. :-)
                                             Logger.Error("That didn't help. May be a problem in RSC-");
                                         }
                                     }
-
 
                                     int updateType = packet.readByte();
                                     if (updateType == 1) { // npc chat
@@ -1460,23 +1533,106 @@ public class ScraperProcessor implements Runnable {
                                 packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
                             }
                             break;
-                        case PacketBuilder.OPCODE_SHOW_SHOP:
+                        case PacketBuilder.OPCODE_SHOW_SHOP: // 101
                             if (Settings.dumpShops) {
+
+
+
+                                // 1. identify the shop
+                                int shopIdx = getShopId(lastNPCTalkedTo, playerX, playerY, packet.timestamp, fname);
+
+                                // 2. create shop if does not exist
+                                if (shops[shopIdx] == null) {
+                                    shops[shopIdx] = new Shop(shopIdx);
+                                }
+
                                 int shopItemCount = packet.readUnsignedByte();
                                 byte shopType = packet.readByte();
-                                int sellpricemod = packet.readUnsignedByte();
-                                int buypricemod = packet.readUnsignedByte();
-                                int priceMultiplier = packet.readUnsignedByte();
-                                for (int index = 0; index < shopItemCount; ++index) {
+                                int sellGenerosity = packet.readUnsignedByte();
+                                int buyGenerosity = packet.readUnsignedByte();
+                                int stockSensitivity = packet.readUnsignedByte();
+                                for (int itemIdx = 0; itemIdx < shopItemCount; ++itemIdx) {
                                     int itemId = packet.readUnsignedShort();
-                                    int itemCount = packet.readUnsignedShort();
-                                    int itemPrice = packet.readUnsignedShort();
+                                    int amountInStock = packet.readUnsignedShort();
+                                    int baseAmountInStock = packet.readUnsignedShort();
 
-                                    if (itemCount > highestStoreStock) {
-                                        Logger.Info("@|white [" + keyCRC + "]|@ New max amount found: " + itemCount + " in replay " + fname);
-                                        highestStoreStock = itemCount;
+                                    // 3. add item to shop
+                                    if (shops[shopIdx].items[itemId] == null) {
+                                        shops[shopIdx].items[itemId] =
+                                            new ShopItem(itemId, amountInStock, baseAmountInStock, packet.timestamp, tickCounter, ShopItem.EVENT_INITIAL);
+                                    } else {
+                                        if (shops[shopIdx].items[itemId].itemID == itemId) {
+                                            int lastStock = shops[shopIdx].items[itemId].stock.get(shops[shopIdx].items[itemId].stock.size() - 1);
+                                            int lastEvent = shops[shopIdx].items[itemId].eventType.get(shops[shopIdx].items[itemId].stock.size() - 1);
+                                            if (amountInStock != lastStock || (shopWasClosed && lastEvent != ShopItem.EVENT_INITIAL)) {
+                                                shops[shopIdx].items[itemId].stock.add(amountInStock);
+                                                shops[shopIdx].items[itemId].baseStock.add(baseAmountInStock); // could probably be just an int, but will record
+                                                shops[shopIdx].items[itemId].timestamps.add(packet.timestamp);
+                                                shops[shopIdx].items[itemId].ticks.add(tickCounter);
+
+                                                // 4. determine why the stock changed
+                                                if (shopWasClosed) {
+                                                    shops[shopIdx].items[itemId].eventType.add(ShopItem.EVENT_INITIAL);
+                                                } else if (packet.timestamp - lastBuyTimestamp < 80 && itemId == lastBuyItem) {
+                                                    shops[shopIdx].items[itemId].eventType.add(ShopItem.EVENT_BUY);
+                                                    lastBuyTimestamp = -100;
+                                                } else if (packet.timestamp - lastSellTimestamp < 80 && itemId == lastSellItem) {
+                                                    shops[shopIdx].items[itemId].eventType.add(ShopItem.EVENT_SELL);
+                                                    lastSellTimestamp = -100;
+                                                } else if (amountInStock - lastStock == 1 && amountInStock <= baseAmountInStock) {
+                                                    // could be a restock event, could still be another player
+                                                    // for now, will just see how big of a deal this would be to manually disambiguate
+                                                    // TODO: need player creation to see if there are any players around.
+                                                    shops[shopIdx].items[itemId].eventType.add(ShopItem.EVENT_RESTOCK);
+                                                    ++shops[shopIdx].items[itemId].restockCount;
+                                                } else if (amountInStock - lastStock == -1 && amountInStock >= baseAmountInStock) {
+                                                    // could be a destock event, could still be another player
+                                                    // for now, will just see how big of a deal this would be to manually disambiguate
+                                                    // TODO: need player creation to see if there are any players around.
+                                                    shops[shopIdx].items[itemId].eventType.add(ShopItem.EVENT_DESTOCK);
+                                                    ++shops[shopIdx].items[itemId].destockCount;
+                                                } else {
+                                                    // TODO:
+                                                    // Can be discounted if there are not any players nearby.
+                                                    // After that, it's a bit hard to detect, b/c e.g., some player could be nearby and sell 1 item to
+                                                    // shop every half of a normal cycle, making it appear to restock twice as fast as normal.
+                                                    shops[shopIdx].items[itemId].eventType.add(ShopItem.EVENT_OTHERPLAYER);
+                                                }
+                                            }
+                                        } else {
+                                            Logger.Error(String.format(
+                                                    "itemId didn't match, %d != %d",
+                                                    shops[shopIdx].items[itemId].itemID,
+                                                    itemId
+                                                )
+                                            );
+                                        }
                                     }
+
+                                    thisReplaySqlStatements.add(
+                                        ScraperDatabase.newSQLStatement(
+                                            Scraper.m_shopsSQL,
+                                            ScraperDatabase.getInsertStatement(
+                                                shopsTable,
+                                                new Object[] {
+                                                    keyCRC,
+                                                    packet.timestamp,
+                                                    lastNPCTalkedTo,
+                                                    playerX,
+                                                    playerY,
+                                                    shopType,
+                                                    sellGenerosity,
+                                                    buyGenerosity,
+                                                    stockSensitivity,
+                                                    itemId,
+                                                    amountInStock,
+                                                    baseAmountInStock
+                                                }
+                                            )
+                                        )
+                                    );
                                 }
+                                shopWasClosed = false;
                             }
                             break;
                         case PacketBuilder.OPCODE_SET_INVENTORY: // 53
@@ -1578,6 +1734,11 @@ public class ScraperProcessor implements Runnable {
                                 int slotRemoved = packet.readUnsignedByte();
                                 int itemID = inventoryItems[slotRemoved];
 
+                                if (itemID == -1) {
+                                    Logger.Warn("Wasn't able to correctly track inventory for replay " + fname + "!!");
+                                    break;
+                                }
+
                                 inventoryItemsAllCount[itemID] -= inventoryStackAmounts[slotRemoved];
                                 for (int slot = slotRemoved; slot < 28; slot++) { // 30-1-1 for indexing & advancing
                                     inventoryItems[slot] = inventoryItems[slot + 1];
@@ -1620,7 +1781,6 @@ public class ScraperProcessor implements Runnable {
                             lastSoundTimestamp = packet.timestamp;
                             break;
 
-
                         default:
                             break;
                     }
@@ -1632,12 +1792,47 @@ public class ScraperProcessor implements Runnable {
                 // Process outgoing packets
                 Logger.Debug("@|white [" + keyCRC + "]|@ " + String.format("outgoing opcode: %d",packet.opcode));
                 try {
+
+                    if (packet.opcode == ReplayEditor.VIRTUAL_OPCODE_ERROR) {
+                    /* TODO:
+                    // Try to determine if there is exactly one opcode that makes sense, given the data & context
+                    // Obviously the client could send opcodes that don't make sense, but we will assume a good-faith recorder...
+                    // for data where the client is sending nonsense data on purpose (don't think this happened), hopefully they
+                    // had a functioning replay with valid out.bin. If they did, they would not reach this block.
+
+                    // first we can filter by packet length. Some packets can't ever be a certain length.
+                    int[] possibleOpcodes = ClientOpcodes.getPossibleOpcodesByLength(packet.data.length);
+
+                    // next we can look at packets in the future to see what the server did in response to the data sent.
+                    (requires restructure of packets loop)
+                    */
+
+                        // For now we can just mark some data invalid.
+                        useItemWithSceneryX = -1;
+                        useItemWithSceneryY = -1;
+                        useItemWithSceneryItemID = -1;
+                        interactWithSceneryOption2X = -1;
+                        interactWithSceneryOption2Y = -1;
+                        interactWithSceneryOption1X = -1;
+                        interactWithSceneryOption1Y = -1;
+                        lastSceneryInteractX = useItemWithSceneryX;
+                        lastSceneryInteractY = useItemWithSceneryY;
+                        lastInteractOpcode = -1;
+                        lastNPCTalkedTo = -1;
+                        lastBuyItem = -1;
+                        lastBuyTimestamp = -1;
+                        lastBuyAmount = -1;
+                        lastSellItem = -1;
+                        lastSellTimestamp = -1;
+                        lastSellAmount = -1;
+                    }
+
                     switch (packet.opcode) {
                         case ReplayEditor.VIRTUAL_OPCODE_CONNECT: // Login
                             Logger.Info("@|white [" + keyCRC + "]|@ outgoing login (timestamp: " + packet.timestamp + ")");
                             break;
 
-                        case 216: // Send chat message
+                        case ClientOpcodes.CLIENT_OPCODE_SEND_CHAT_MESSAGE: // 216
                             if (Settings.dumpChat) {
                                 String sendChatMessage = packet.readRSCString();
                                 thisReplaySqlStatements.add(
@@ -1660,7 +1855,7 @@ public class ScraperProcessor implements Runnable {
                                 packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
                             break;
 
-                        case 218: // Send private message
+                        case ClientOpcodes.CLIENT_OPCODE_SEND_PM: // 218
                             if (Settings.dumpChat) {
                                 packet.readPaddedString(); // recipient
                                 String sendPMMessage = packet.readRSCString();
@@ -1683,15 +1878,15 @@ public class ScraperProcessor implements Runnable {
                                 packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
                             break;
 
-                        case 167: // Remove friend
-                        case 195: // Add friend
-                        case 241: // Remove ignore
-                        case 132: // Add ignore
+                        case ClientOpcodes.CLIENT_OPCODE_REMOVE_FRIEND: // 167
+                        case ClientOpcodes.CLIENT_OPCODE_ADD_FRIEND: // 195
+                        case ClientOpcodes.CLIENT_OPCODE_REMOVE_IGNORED: // 241
+                        case ClientOpcodes.CLIENT_OPCODE_ADD_IGNORE: // 132
                             if (Settings.sanitizeFriendsIgnore)
                                 packet.opcode = ReplayEditor.VIRTUAL_OPCODE_NOP;
                             break;
 
-                        case 116: // Choose dialogue option
+                        case ClientOpcodes.CLIENT_OPCODE_SELECT_DIALOGUE_OPTION: // 116
                             if (Settings.dumpMessages) {
                                 thisReplaySqlStatements.add(
                                     ScraperDatabase.newSQLStatement(
@@ -1708,13 +1903,13 @@ public class ScraperProcessor implements Runnable {
                                 );
                             }
                             break;
-                        case 45: // Send Sleepword Guess
+                        case ClientOpcodes.CLIENT_OPCODE_SEND_SLEEPWORD: // 45
                             if (Settings.dumpSleepWords) {
                                 interestingSleepPackets.add(packet);
                             }
                             break;
 
-                        case 235: // Send appearance
+                        case ClientOpcodes.CLIENT_OPCODE_SEND_APPEARANCE: // 235
                             if (Settings.dumpAppearances) {
                                 System.out.print("Appearance Packet in " + fname + ": ");
                                 try {
@@ -1727,7 +1922,7 @@ public class ScraperProcessor implements Runnable {
                                 System.out.println();
                             }
                             break;
-                        case 115: // Use item with Scenery
+                        case ClientOpcodes.CLIENT_OPCODE_USE_WITH_SCENERY: // 115
                             if (Settings.dumpRNGEvents || Settings.dumpInteractions) {
                                 useItemWithSceneryX = packet.readUnsignedShort();
                                 useItemWithSceneryY = packet.readUnsignedShort();
@@ -1737,7 +1932,7 @@ public class ScraperProcessor implements Runnable {
                                 useItemWithSceneryItemID = inventoryItems[packet.readUnsignedShort()];
                             }
                             break;
-                        case 79: // Interact with scenery option 2
+                        case ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_SCENERY_OPTION_2: // 79
                             if (Settings.dumpRNGEvents || Settings.dumpInteractions) {
                                 interactWithSceneryOption2X = packet.readUnsignedShort();
                                 interactWithSceneryOption2Y = packet.readUnsignedShort();
@@ -1746,7 +1941,7 @@ public class ScraperProcessor implements Runnable {
                                 lastInteractOpcode = packet.opcode;
                             }
                             break;
-                        case 136: // interact with scenery option 1
+                        case ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_SCENERY: // 136
                             if (Settings.dumpRNGEvents || Settings.dumpInteractions) {
                                 interactWithSceneryOption1X = packet.readUnsignedShort();
                                 interactWithSceneryOption1Y = packet.readUnsignedShort();
@@ -1759,6 +1954,29 @@ public class ScraperProcessor implements Runnable {
                             }
                             break;
 
+                        case ClientOpcodes.CLIENT_OPCODE_TALK_TO_NPC: // 153
+                            if (Settings.dumpShops) {
+                                int npcServerIndex = packet.readUnsignedShort();
+                                lastNPCTalkedTo = npcsServer[npcServerIndex].npcId;
+                                shopWasClosed = true;
+                            }
+                            break;
+                        case ClientOpcodes.CLIENT_OPCODE_SELL_TO_SHOP:
+                            if (Settings.dumpShops) {
+                                lastSellItem = packet.readUnsignedShort();
+                                int shopAmount = packet.readUnsignedShort();
+                                lastSellAmount = packet.readUnsignedShort();
+                                lastSellTimestamp = packet.timestamp;
+                            }
+                            break;
+                        case ClientOpcodes.CLIENT_OPCODE_BUY_FROM_SHOP:
+                            if (Settings.dumpShops) {
+                                lastBuyItem = packet.readUnsignedShort();
+                                int shopAmount = packet.readUnsignedShort();
+                                lastBuyAmount = packet.readUnsignedShort();;
+                                lastBuyTimestamp = packet.timestamp;
+                            }
+                            break;
                         default:
                             break;
                     }
@@ -1802,10 +2020,11 @@ public class ScraperProcessor implements Runnable {
 
 
         // go through both incoming & outgoing packets in chronological order, for ease of logic
-        // TODO: could work this back into the main scraper now that it's been refactored
-        // to go through both incoming & outgoing in chronological order too,
-        // but also it still works and I'm reasonably sure we will never need to dump sleepwords again anyway.
         if (Settings.dumpSleepWords) {
+            // TODO: could work this back into the main scraper now that it's been refactored
+            // to go through both incoming & outgoing in chronological order too,
+            // but also it still works and I'm reasonably sure we will never need to dump sleepwords again anyway.
+
             int numberOfPackets = interestingSleepPackets.size();
             ReplayPacket[] sleepPackets = new ReplayPacket[numberOfPackets];
 
@@ -1955,6 +2174,44 @@ public class ScraperProcessor implements Runnable {
             outDir = outDir.replace(Settings.sanitizeBaseOutputPath,Settings.sanitizeBaseOutputPath + "/pcaps");
             FileUtil.mkdir(new File(outDir).getParent());
             editor.exportPCAP(outDir);
+        }
+
+        if (Settings.dumpShops) {
+            for (Shop shop : shops) {
+                if (shop != null) {
+                    for (ShopItem item : shop.items) {
+                        if (item != null) {
+                            // from here there can be 2 methods to get shop restock time
+                            // 1. a nice string of incrementing restock events (IDEAL)
+                            // 2. a buy event (optional) followed by shop closing, coming back a while later, and stock still below baseStock
+                            // Option 1 is only possible if restockCount > 1, but for option 2, we will log all events.
+                            int events = item.eventType.size();
+                            for (int idx = 0; idx < events; idx++) {
+                                thisReplaySqlStatements.add(
+                                    ScraperDatabase.newSQLStatement(
+                                        Scraper.m_shopEventsSQL,
+                                        ScraperDatabase.getInsertStatement(
+                                            shopEventsTable,
+                                            new Object[]{
+                                                keyCRC,
+                                                item.timestamps.get(idx),
+                                                item.ticks.get(idx),
+                                                shop.index,
+                                                item.itemID,
+                                                item.eventType.get(idx),
+                                                item.stock.get(idx),
+                                                item.baseStock.get(idx),
+                                                item.restockCount,
+                                                item.destockCount
+                                            }
+                                        )
+                                    )
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if (Scraper.validSQLCredentials) {

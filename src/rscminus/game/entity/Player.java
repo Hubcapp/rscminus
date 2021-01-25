@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU General Public License along with rscminus. If not,
  * see <http://www.gnu.org/licenses/>.
  *
- * Authors: see <https://github.com/OrN/rscminus>
+ * Authors: see <https://github.com/RSCPlus/rscminus>
  */
 
 package rscminus.game.entity;
@@ -50,25 +50,6 @@ public class Player extends Entity {
     // Tick update variables
     private boolean m_tickRequestLogout;
     private boolean m_tickUpdateFloor;
-
-    // Packet opcodes
-    public static final int OPCODE_INTERACT_WALLOBJECT_OPTION1 = 14;
-    public static final int OPCODE_WALKTO_SOURCE = 16;
-    public static final int OPCODE_DISCONNECT = 31;
-    public static final int OPCODE_COMMANDSTRING = 38;
-    public static final int OPCODE_SLEEPWORD = 45;
-    public static final int OPCODE_KEEPALIVE = 67;
-    public static final int OPCODE_INTERACT_OBJECT_OPTION2 = 79;
-    public static final int OPCODE_ACTIVATE_INVENTORY_ITEM_SLOT = 90;
-    public static final int OPCODE_LOGOUT = 102;
-    public static final int OPCODE_INTERACT_WALLOBJECT_OPTION2 = 127;
-    public static final int OPCODE_INTERACT_OBJECT_OPTION1 = 136;
-    public static final int OPCODE_EQUIP_ITEM = 169;
-    public static final int OPCODE_UNEQUIP_ITEM = 170;
-    public static final int OPCODE_WALKTO = 187;
-    public static final int OPCODE_SET_APPEARANCE = 235;
-    public static final int OPCODE_DROP_ITEM = 246;
-    public static final int OPCODE_SEND_CHAT_MESSAGE = 216;
 
     // Player update
     private boolean m_updateChat;
@@ -639,18 +620,18 @@ public class Player extends Entity {
 
             // Handle incoming packets
             switch (opcode) {
-            case OPCODE_INTERACT_WALLOBJECT_OPTION1:
-            case OPCODE_INTERACT_WALLOBJECT_OPTION2:
+            case ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_BOUNDARY:
+            case ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_BOUNDARY_OPTION_2:
             {
                 int x = m_packetStream.readShort();
                 int y = m_packetStream.readShort();
                 int direction = m_packetStream.readByte();
-                int option = (opcode == OPCODE_INTERACT_WALLOBJECT_OPTION1) ? 0 : 1;
+                int option = (opcode == ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_BOUNDARY) ? 0 : 1;
                 m_actionSlot.setAction(ActionSlot.ACTION_INTERACT_WALLOBJECT);
                 m_actionSlot.setInteraction(x, y, direction, option);
                 break;
             }
-            case OPCODE_WALKTO_SOURCE:
+            case ClientOpcodes.CLIENT_OPCODE_WALK_AND_PERFORM_ACTION:
             {
                 int startX = m_packetStream.readUnsignedShort();
                 int startY = m_packetStream.readUnsignedShort();
@@ -666,33 +647,33 @@ public class Player extends Entity {
                 }
                 break;
             }
-            case OPCODE_DISCONNECT:
+            case ClientOpcodes.CLIENT_OPCODE_CLOSE_CONNECTION_REPLY:
                 closeSocket();
                 break;
-            case OPCODE_KEEPALIVE:
+            case ClientOpcodes.CLIENT_OPCODE_HEARTBEAT:
                 break;
-            case OPCODE_LOGOUT:
+            case ClientOpcodes.CLIENT_OPCODE_REQUEST_LOGOUT:
                 m_tickRequestLogout = true;
                 break;
-            case OPCODE_INTERACT_OBJECT_OPTION1:
-            case OPCODE_INTERACT_OBJECT_OPTION2:
+            case ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_SCENERY:
+            case ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_SCENERY_OPTION_2:
             {
                 int x = m_packetStream.readShort();
                 int y = m_packetStream.readShort();
-                int option = (opcode == OPCODE_INTERACT_OBJECT_OPTION1) ? 0 : 1;
+                int option = (opcode == ClientOpcodes.CLIENT_OPCODE_INTERACT_WITH_SCENERY) ? 0 : 1;
                 m_actionSlot.setAction(ActionSlot.ACTION_INTERACT_OBJECT);
                 m_actionSlot.setInteraction(x, y, option);
                 break;
             }
-            case OPCODE_EQUIP_ITEM:
+            case ClientOpcodes.CLIENT_OPCODE_EQUIP_ITEM:
                 m_actionSlot.setAction(ActionSlot.ACTION_INVENTORY_EQUIP);
                 m_actionSlot.setInventorySlot(m_packetStream.readUnsignedShort());
                 break;
-            case OPCODE_UNEQUIP_ITEM:
+            case ClientOpcodes.CLIENT_OPCODE_UNEQUIP_ITEM:
                 m_actionSlot.setAction(ActionSlot.ACTION_INVENTORY_UNEQUIP);
                 m_actionSlot.setInventorySlot(m_packetStream.readUnsignedShort());
                 break;
-            case OPCODE_WALKTO:
+            case ClientOpcodes.CLIENT_OPCODE_WALK:
             {
                 int startX = m_packetStream.readUnsignedShort();
                 int startY = m_packetStream.readUnsignedShort();
@@ -709,7 +690,7 @@ public class Player extends Entity {
                 }
                 break;
             }
-            case OPCODE_SET_APPEARANCE:
+            case ClientOpcodes.CLIENT_OPCODE_SEND_APPEARANCE:
             {
                 int gender = m_packetStream.readUnsignedByte();
                 int headType = m_packetStream.readUnsignedByte();
@@ -729,11 +710,11 @@ public class Player extends Entity {
                 m_updateAppearance = true;
                 break;
             }
-            case OPCODE_DROP_ITEM:
+            case ClientOpcodes.CLIENT_OPCODE_DROP_ITEM:
                 m_actionSlot.setAction(ActionSlot.ACTION_INVENTORY_DROP);
                 m_actionSlot.setInventorySlot(m_packetStream.readUnsignedShort());
                 break;
-            case OPCODE_SEND_CHAT_MESSAGE:
+            case ClientOpcodes.CLIENT_OPCODE_SEND_CHAT_MESSAGE:
                 //Check if the user already has a message queued
                 if (m_updateChat)
                     break;
@@ -742,7 +723,7 @@ public class Player extends Entity {
                 ChatCipher.encipher(decipheredMessage, chatMessage);
                 m_updateChat = true;
                 break;
-            case OPCODE_ACTIVATE_INVENTORY_ITEM_SLOT:
+            case ClientOpcodes.CLIENT_OPCODE_ACTIVATE_INVENTORY_ITEM:
                 m_packetStream.readUnsignedByte();
                 int slot = m_packetStream.readUnsignedByte();
                 if (m_saveInfo.inventory[slot] == 1263) {
@@ -750,7 +731,7 @@ public class Player extends Entity {
                 }
                 break;
 
-            case OPCODE_SLEEPWORD:
+            case ClientOpcodes.CLIENT_OPCODE_SEND_SLEEPWORD:
                 // tempting to check accuracy, but this is really only in order to rename unknown sleeps atm.
                 m_packetStream.readUnsignedByte();
                 int delay = m_packetStream.readUnsignedByte();
@@ -768,7 +749,7 @@ public class Player extends Entity {
                     PacketBuilder.sendMessage(3,"Thanks for your help! You wake up feeling refreshed. ;)", "", "", "@whi@", m_outgoingStream, m_isaacOutgoing);
                 }
                 break;
-            case OPCODE_COMMANDSTRING:
+            case ClientOpcodes.CLIENT_OPCODE_SEND_COMMAND_STRING:
                 m_packetStream.readUnsignedByte();
                 String command = m_packetStream.readString();
                 if (command.equals("shutdownGracefully")) {

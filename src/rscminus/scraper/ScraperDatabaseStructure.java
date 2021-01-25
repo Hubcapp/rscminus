@@ -97,6 +97,18 @@ class ScraperDatabaseStructure {
         new int[] { 0, 0, 0, 0, 0, 0, 0 }
     );
 
+    static final ScraperDatabaseTable shopsTable = new ScraperDatabaseTable (
+        "SHOW_SHOP",
+        new String[] { indexName, "timestamp", "shopOwner", "playerX", "playerY", "shopType", "sellGenerosity", "buyGenerosity", "stockSensitivity", "itemId", "amountInStock", "baseAmountInStock" },
+        new int[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+    );
+
+    static final ScraperDatabaseTable shopEventsTable = new ScraperDatabaseTable (
+        "SHOP_EVENTS",
+        new String[] { indexName, "timestamp", "tickCounter", "shop", "itemId", "eventType", "amountInStock", "baseAmountInStock", "restockCount", "destockCount" },
+        new int[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+    );
+
     static final ScraperDatabaseTable sendChatTable = new ScraperDatabaseTable (
         "SEND_CHAT",
         new String[] { indexName, "timestamp", "pid", "sendCount", "message" },
